@@ -1,0 +1,14 @@
+/* My Admin Custom Styles */
+.main-sidebar {
+    background-color: #061a40 !important;
+}
+
+.main-sidebar .brand-link,
+.main-sidebar .nav-sidebar > .nav-item > .nav-link {
+    color: #dbe7ff;
+}
+
+.main-sidebar .nav-sidebar > .nav-item > .nav-link.active {
+    background-color: #0a2a66 !important;
+    color: #ffffff !important;
+}
