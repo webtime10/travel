@@ -3,9 +3,13 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\IndexCategoryProductJob;
 use App\Models\Category;
 use App\Models\CategoryDescription;
 use App\Models\Language;
+use App\Services\CategoryVectorPipelineStore;
+use App\Services\RagDatabaseService;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -15,12 +19,18 @@ class CategoryController extends Controller
     {
         $pageTitle = 'Categories';
         $defaultLanguage = Language::getDefault();
+        $heLanguage = Language::query()->where('code', 'he')->where('is_active', true)->first();
         $categories = Category::with(['parent.descriptions', 'descriptions'])
             ->orderBy('sort_order')
             ->orderByDesc('id')
             ->get();
 
-        return view('admin.categories.index', compact('categories', 'pageTitle', 'defaultLanguage'));
+        return view('admin.categories.index', compact(
+            'categories',
+            'pageTitle',
+            'defaultLanguage',
+            'heLanguage',
+        ));
     }
 
     public function create()
@@ -84,7 +94,7 @@ class CategoryController extends Controller
         return redirect()->route('admin.categories.index')->with('success', 'Категория создана');
     }
 
-    public function edit(Category $category)
+    public function edit(Category $category, CategoryVectorPipelineStore $vectorPipeline, RagDatabaseService $ragDb)
     {
         $pageTitle = 'Categories';
         $languages = Language::forAdminForms();
@@ -92,8 +102,22 @@ class CategoryController extends Controller
         $exclude = array_merge([$category->id], $category->descendantIdList());
         $parentOptions = Category::treeForParentSelect($defaultLanguage, $exclude);
         $category->load('descriptions');
+        $productCount = $category->products()->count();
+        $vectorStatus = $vectorPipeline->status($category->id);
+        $pendingVectorCount = count($this->pendingVectorProductIds($category, $ragDb));
+        $indexedVectorCount = max(0, $productCount - $pendingVectorCount);
 
-        return view('admin.categories.edit', compact('pageTitle', 'category', 'languages', 'defaultLanguage', 'parentOptions'));
+        return view('admin.categories.edit', compact(
+            'pageTitle',
+            'category',
+            'languages',
+            'defaultLanguage',
+            'parentOptions',
+            'productCount',
+            'vectorStatus',
+            'pendingVectorCount',
+            'indexedVectorCount',
+        ));
     }
 
     public function update(Request $request, Category $category)
@@ -138,6 +162,7 @@ class CategoryController extends Controller
                     if ($desc) {
                         $desc->delete();
                     }
+
                     continue;
                 }
 
@@ -179,5 +204,143 @@ class CategoryController extends Controller
         }
 
         return redirect()->route('admin.categories.index')->with('success', 'Выбранные категории удалены');
+    }
+
+    public function vectorStatus(Category $category, CategoryVectorPipelineStore $pipeline, RagDatabaseService $ragDb): JsonResponse
+    {
+        $status = $pipeline->status($category->id);
+        $all = $category->products()->count();
+        $pending = count($this->pendingVectorProductIds($category, $ragDb));
+
+        return response()->json(array_merge($status, [
+            'product_total' => $all,
+            'indexed' => max(0, $all - $pending),
+            'pending' => $pending,
+        ]));
+    }
+
+    public function vectorStart(
+        Category $category,
+        CategoryVectorPipelineStore $pipeline,
+        RagDatabaseService $ragDb,
+    ): JsonResponse {
+        $ids = $category->products()
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->pluck('products.id')
+            ->map(fn ($id) => (int) $id)
+            ->values()
+            ->all();
+
+        return $this->launchVectorPipeline($category, $pipeline, $ragDb, $ids, false);
+    }
+
+    public function vectorResume(
+        Category $category,
+        CategoryVectorPipelineStore $pipeline,
+        RagDatabaseService $ragDb,
+    ): JsonResponse {
+        $ids = $this->pendingVectorProductIds($category, $ragDb);
+
+        return $this->launchVectorPipeline($category, $pipeline, $ragDb, $ids, true);
+    }
+
+    public function vectorCancel(Category $category, CategoryVectorPipelineStore $pipeline): JsonResponse
+    {
+        $pipeline->cancel($category->id);
+
+        return response()->json(['ok' => true, 'message' => 'Cancelled']);
+    }
+
+    /**
+     * Products in category not yet indexed in PostgreSQL RAG.
+     *
+     * @return list<int>
+     */
+    private function pendingVectorProductIds(Category $category, RagDatabaseService $ragDb): array
+    {
+        $ids = $category->products()
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->pluck('products.id')
+            ->map(fn ($id) => (int) $id)
+            ->values()
+            ->all();
+
+        if ($ids === []) {
+            return [];
+        }
+
+        $status = $ragDb->connectionStatus();
+        if (! ($status['ok'] ?? false) || ! ($status['schema_ready'] ?? false)) {
+            return $ids;
+        }
+
+        try {
+            $indexed = DB::connection(RagDatabaseService::CONNECTION)
+                ->table('rag_documents')
+                ->whereIn('product_id', $ids)
+                ->where('chunk_count', '>', 0)
+                ->whereNotNull('indexed_at')
+                ->pluck('product_id')
+                ->map(fn ($id) => (int) $id)
+                ->all();
+        } catch (\Throwable) {
+            return $ids;
+        }
+
+        $indexedMap = array_fill_keys($indexed, true);
+
+        return array_values(array_filter($ids, fn (int $id) => ! isset($indexedMap[$id])));
+    }
+
+    /**
+     * @param  list<int>  $ids
+     */
+    private function launchVectorPipeline(
+        Category $category,
+        CategoryVectorPipelineStore $pipeline,
+        RagDatabaseService $ragDb,
+        array $ids,
+        bool $resume,
+    ): JsonResponse {
+        if ($pipeline->running($category->id)) {
+            return response()->json(['ok' => false, 'message' => 'Vector indexing already running'], 409);
+        }
+
+        $ragStatus = $ragDb->connectionStatus();
+        if (! ($ragStatus['ok'] ?? false)) {
+            return response()->json(['ok' => false, 'message' => 'PostgreSQL RAG not connected'], 503);
+        }
+        if (! ($ragStatus['schema_ready'] ?? false)) {
+            $ragDb->migrateSchema();
+        }
+
+        if ($ids === []) {
+            return response()->json([
+                'ok' => true,
+                'started' => 0,
+                'message' => $resume
+                    ? 'Nothing pending — all products in this category are already indexed'
+                    : 'No products in this category',
+            ]);
+        }
+
+        $pipeline->begin($category->id, $ids);
+        $first = $pipeline->shiftQueue($category->id);
+        if ($first !== null) {
+            IndexCategoryProductJob::dispatch($category->id, $first);
+        }
+
+        $msg = $resume
+            ? 'Resume from previous: '.count($ids).' remaining products. Worker: php artisan queue:work'
+            : 'Full reindex started ('.count($ids).' products). Worker: php artisan queue:work';
+
+        return response()->json([
+            'ok' => true,
+            'started' => count($ids),
+            'resume' => $resume,
+            'message' => $msg,
+        ]);
     }
 }

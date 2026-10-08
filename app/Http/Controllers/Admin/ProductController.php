@@ -9,23 +9,76 @@ use App\Models\Product;
 use App\Models\ProductDescription;
 use App\Services\DocxBlocksRuTranslator;
 use App\Services\DocxJsonCoverageAuditor;
+use App\Services\DocxMetaHelper;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class ProductController extends Controller
 {
-    public function index()
+    public function index(Request $request)
     {
         $pageTitle = 'Products';
         $defaultLanguage = Language::getDefault();
-        $products = Product::query()
-            ->select(['id', 'sort_order', 'status', 'created_at', 'updated_at'])
-            ->with(['descriptions' => fn ($q) => $q->where('language_id', $defaultLanguage?->id), 'categories.descriptions'])
+        $modelsFilter = $this->parseModelsFilter((string) $request->input('models', ''));
+
+        $query = Product::query()
+            ->select(['id', 'model', 'sort_order', 'status', 'created_at', 'updated_at'])
+            ->with(['descriptions' => fn ($q) => $q->where('language_id', $defaultLanguage?->id), 'categories.descriptions']);
+
+        if ($modelsFilter !== []) {
+            $query->where(function ($q) use ($modelsFilter) {
+                foreach ($modelsFilter as $model) {
+                    $q->orWhere('model', $model);
+                }
+            });
+        }
+
+        $products = $query
             ->orderBy('sort_order')
             ->orderByDesc('id')
-            ->paginate(20);
+            ->paginate(50)
+            ->withQueryString();
 
-        return view('admin.products.index', compact('products', 'pageTitle', 'defaultLanguage'));
+        // Heavy pending/translate counts are loaded via pipeline status AJAX — not on page render.
+        $pendingDocx = 0;
+        $needsTranslation = 0;
+        $modelsInput = implode(', ', $modelsFilter);
+
+        return view('admin.products.index', compact(
+            'products',
+            'pageTitle',
+            'defaultLanguage',
+            'pendingDocx',
+            'needsTranslation',
+            'modelsInput',
+            'modelsFilter',
+        ));
+    }
+
+    /**
+     * Parse "33" or "33,4,18" into a list of model codes.
+     *
+     * @return list<string>
+     */
+    private function parseModelsFilter(string $raw): array
+    {
+        $raw = trim($raw);
+        if ($raw === '') {
+            return [];
+        }
+
+        $parts = preg_split('/\s*,\s*/u', $raw) ?: [];
+        $out = [];
+        foreach ($parts as $part) {
+            $part = trim((string) $part);
+            if ($part === '') {
+                continue;
+            }
+            $out[$part] = true;
+        }
+
+        return array_keys($out);
     }
 
     public function create()
@@ -46,6 +99,7 @@ class ProductController extends Controller
         }
 
         $rules = [
+            'model' => 'nullable|string|max:64|unique:products,model',
             'sort_order' => 'nullable|integer|min:0',
             'status' => 'nullable|boolean',
             'category_ids' => 'nullable|array',
@@ -59,7 +113,9 @@ class ProductController extends Controller
         $request->validate($rules);
 
         DB::transaction(function () use ($request, $languages) {
+            $model = trim((string) $request->input('model', ''));
             $product = Product::create([
+                'model' => $model !== '' ? $model : null,
                 'sort_order' => (int) $request->input('sort_order', 0),
                 'status' => $request->boolean('status'),
             ]);
@@ -98,6 +154,12 @@ class ProductController extends Controller
     {
         $languages = Language::forAdminForms();
         $rules = [
+            'model' => [
+                'nullable',
+                'string',
+                'max:64',
+                Rule::unique('products', 'model')->ignore($product->id),
+            ],
             'sort_order' => 'nullable|integer|min:0',
             'status' => 'nullable|boolean',
             'category_ids' => 'nullable|array',
@@ -111,7 +173,9 @@ class ProductController extends Controller
         $request->validate($rules);
 
         DB::transaction(function () use ($request, $languages, $product) {
+            $model = trim((string) $request->input('model', ''));
             $product->update([
+                'model' => $model !== '' ? $model : null,
                 'sort_order' => (int) $request->input('sort_order', 0),
                 'status' => $request->boolean('status'),
             ]);
@@ -124,6 +188,7 @@ class ProductController extends Controller
                     if ($desc) {
                         $desc->delete();
                     }
+
                     continue;
                 }
                 $payload = [
@@ -161,21 +226,45 @@ class ProductController extends Controller
         return redirect()->route('admin.products.index')->with('success', 'Выбранные товары удалены');
     }
 
-    public function docxJson(Product $product)
+    public function docxJson(Request $request, Product $product)
     {
-        $meta = $product->meta;
-        if (! is_array($meta) || ($meta['format'] ?? '') !== 'docx_sequential_v1') {
+        $lang = strtolower((string) $request->query('lang', 'he'));
+        $isRu = $lang === 'ru';
+
+        if ($isRu) {
+            $meta = $product->ruMeta();
+            if ($meta === null) {
+                return response()->json(['ok' => false, 'message' => 'Нет русского JSON — нажмите A文'], 422);
+            }
+
+            return response()->json($meta, 200, [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+        }
+
+        $meta = $product->heMeta();
+        if ($meta === null) {
             return response()->json(['ok' => false, 'message' => 'Нет DOCX sequential данных'], 422);
         }
+
+        $meta = DocxMetaHelper::purifyHebrew($meta);
 
         return response()->json($meta, 200, [], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
     }
 
     public function docxBlocks(Request $request, Product $product)
     {
-        $meta = $product->meta;
-        if (! is_array($meta) || ($meta['format'] ?? '') !== 'docx_sequential_v1') {
-            return response()->json(['ok' => false, 'message' => 'Нет DOCX sequential данных'], 422);
+        $lang = strtolower((string) $request->query('lang', 'he'));
+        $isRu = $lang === 'ru';
+
+        $meta = $isRu ? $product->ruMeta() : $product->heMeta();
+        if ($meta === null) {
+            return response()->json([
+                'ok' => false,
+                'message' => $isRu ? 'Нет русского JSON — нажмите A文' : 'Нет DOCX sequential данных',
+            ], 422);
+        }
+
+        if (! $isRu) {
+            $meta = DocxMetaHelper::purifyHebrew($meta);
         }
 
         $blocks = $meta['blocks'] ?? [];
@@ -183,8 +272,6 @@ class ProductController extends Controller
             $blocks = [];
         }
 
-        $lang = strtolower((string) $request->query('lang', 'he'));
-        $isRu = $lang === 'ru';
         $offset = max(0, (int) $request->query('offset', 0));
         $limit = max(1, min(300, (int) $request->query('limit', 200)));
         $total = count($blocks);
@@ -206,12 +293,11 @@ class ProductController extends Controller
                     'src' => $src !== '' ? asset($src) : null,
                     'src_raw' => $src,
                 ];
+
                 continue;
             }
 
-            $text = $isRu
-                ? trim((string) ($block['text_ru'] ?? ''))
-                : (string) ($block['text'] ?? '');
+            $text = (string) ($block['text'] ?? '');
 
             $items[] = [
                 'index' => (int) $i + 1,
@@ -219,7 +305,7 @@ class ProductController extends Controller
                 'style' => $block['style'] ?? null,
                 'text' => $text,
                 'url' => ! empty($block['url']) ? (string) $block['url'] : null,
-                'empty_ru' => $isRu && $text === '',
+                'empty_ru' => $isRu && trim($text) === '',
                 'src' => null,
                 'src_raw' => null,
             ];
@@ -245,10 +331,11 @@ class ProductController extends Controller
     {
         @set_time_limit(300);
 
-        $meta = $product->meta;
-        if (! is_array($meta) || ($meta['format'] ?? '') !== 'docx_sequential_v1') {
+        $meta = $product->heMeta();
+        if ($meta === null) {
             return response()->json(['ok' => false, 'message' => 'Нет DOCX sequential данных'], 422);
         }
+        $meta = DocxMetaHelper::purifyHebrew($meta);
 
         $path = $auditor->resolveDocxPath($meta);
         if ($path === null) {
@@ -267,7 +354,6 @@ class ProductController extends Controller
             ], 500);
         }
 
-        // Persist last report on meta for later glance
         $meta['coverage_report'] = [
             'at' => now()->toIso8601String(),
             'coverage_percent' => $report['coverage_percent'],
@@ -288,30 +374,23 @@ class ProductController extends Controller
     {
         @set_time_limit(600);
 
-        $meta = $product->meta;
-        if (! is_array($meta) || ($meta['format'] ?? '') !== 'docx_sequential_v1') {
+        $heMeta = $product->heMeta();
+        if ($heMeta === null) {
             return response()->json(['ok' => false, 'message' => 'Нет DOCX sequential данных'], 422);
         }
 
         $limit = max(1, min(40, (int) $request->input('limit', 12)));
 
         try {
-            $result = $translator->translateBatch($meta, $limit);
+            $result = $translator->translateBatch($heMeta, $product->meta_ru, $limit);
         } catch (\Throwable $e) {
-            $already = 0;
-            $total = 0;
-            foreach (($meta['blocks'] ?? []) as $block) {
-                if (! is_array($block) || ($block['type'] ?? '') === 'image') {
-                    continue;
-                }
-                if (trim((string) ($block['text'] ?? '')) === '') {
-                    continue;
-                }
-                $total++;
-                if (trim((string) ($block['text_ru'] ?? '')) !== '') {
-                    $already++;
-                }
-            }
+            $heBlocks = $heMeta['blocks'] ?? [];
+            $ruBlocks = is_array($product->meta_ru) ? ($product->meta_ru['blocks'] ?? []) : [];
+            $total = DocxMetaHelper::countTranslatable(is_array($heBlocks) ? $heBlocks : []);
+            $already = DocxMetaHelper::countTranslated(
+                is_array($heBlocks) ? $heBlocks : [],
+                is_array($ruBlocks) ? $ruBlocks : []
+            );
 
             return response()->json([
                 'ok' => false,
@@ -323,19 +402,24 @@ class ProductController extends Controller
             ], 500);
         }
 
-        $product->meta = $result['meta'];
+        $product->meta = $result['he_meta'];
+        $product->meta_ru = $result['ru_meta'];
         $product->save();
 
-        // Keep inspection copy in sync when present
-        $docIndex = (int) data_get($result['meta'], 'doc_index', 0);
-        if ($docIndex > 0) {
+        $docIndex = (string) (data_get($result['he_meta'], 'doc_index') ?: $product->model ?: '0');
+        if ($docIndex !== '' && $docIndex !== '0') {
             $extractDir = storage_path('app/docx_literal/'.$docIndex);
-            if (is_dir($extractDir)) {
-                file_put_contents(
-                    $extractDir.'/blocks.json',
-                    json_encode($result['meta'], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)
-                );
+            if (! is_dir($extractDir)) {
+                mkdir($extractDir, 0777, true);
             }
+            file_put_contents(
+                $extractDir.'/blocks.json',
+                json_encode($result['he_meta'], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)
+            );
+            file_put_contents(
+                $extractDir.'/blocks_ru.json',
+                json_encode($result['ru_meta'], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT)
+            );
         }
 
         $payload = [
@@ -345,7 +429,7 @@ class ProductController extends Controller
             'total' => $result['total'],
             'already' => $result['already'],
             'done' => $result['done'],
-            'translated_ru' => data_get($result['meta'], 'stats.translated_ru', 0),
+            'translated_ru' => data_get($result['ru_meta'], 'stats.translated', 0),
         ];
 
         if (! empty($result['warning'])) {

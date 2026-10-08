@@ -99,6 +99,23 @@ return [
             'sslmode' => env('DB_SSLMODE', 'prefer'),
         ],
 
+        /*
+        | RAG / vectors (Hebrew content). Separate from MySQL app DB.
+        */
+        'pgsql_rag' => [
+            'driver' => 'pgsql',
+            'host' => env('DB_RAG_HOST', '127.127.126.55'),
+            'port' => env('DB_RAG_PORT', '5432'),
+            'database' => env('DB_RAG_DATABASE', 'travel_rag'),
+            'username' => env('DB_RAG_USERNAME', 'postgres'),
+            'password' => env('DB_RAG_PASSWORD', ''),
+            'charset' => env('DB_RAG_CHARSET', 'utf8'),
+            'prefix' => '',
+            'prefix_indexes' => true,
+            'search_path' => 'public',
+            'sslmode' => env('DB_RAG_SSLMODE', 'prefer'),
+        ],
+
         'sqlsrv' => [
             'driver' => 'sqlsrv',
             'url' => env('DB_URL'),

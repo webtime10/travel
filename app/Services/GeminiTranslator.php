@@ -7,6 +7,8 @@ use RuntimeException;
 
 class GeminiTranslator
 {
+    public function __construct(private GeminiKeyPool $keys) {}
+
     /**
      * Translate Hebrew (or mixed) strings to Russian. Keys preserved.
      *
@@ -19,17 +21,11 @@ class GeminiTranslator
             return [];
         }
 
-        $apiKey = trim((string) config('services.gemini.key', ''));
         $model = trim((string) config('services.gemini.model', 'gemini-3.6-flash'));
         $timeout = max(60, (int) config('services.gemini.chat_timeout', 900));
 
-        if ($apiKey === '') {
-            throw new RuntimeException('GEMINI_API_KEY is empty');
-        }
-
         $payloadItems = [];
         foreach ($items as $id => $text) {
-            // Cap very long blocks so one monster line cannot break the whole batch
             $t = $text;
             if (mb_strlen($t) > 2500) {
                 $t = mb_substr($t, 0, 2500).'…';
@@ -52,31 +48,33 @@ Rules:
 PROMPT;
 
         $material = json_encode(['items' => $payloadItems], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        $raw = $this->chat($apiKey, $model, (string) $material, $instruction, $timeout);
-        if ($raw === null || trim($raw) === '') {
-            throw new RuntimeException('Empty Gemini response');
-        }
 
-        $out = $this->parseTranslationJson($raw);
-        if ($out === []) {
-            // one retry with stricter reminder
-            $raw2 = $this->chat(
-                $apiKey,
-                $model,
-                (string) $material,
-                $instruction."\nIMPORTANT: Your previous reply was invalid. Output ONLY valid JSON object.",
-                $timeout
-            );
-            if (is_string($raw2) && trim($raw2) !== '') {
-                $out = $this->parseTranslationJson($raw2);
+        return $this->keys->withKey(function (string $apiKey) use ($model, $material, $instruction, $timeout) {
+            $raw = $this->chat($apiKey, $model, (string) $material, $instruction, $timeout);
+            if ($raw === null || trim($raw) === '') {
+                throw new RuntimeException('Empty Gemini response');
             }
-        }
 
-        if ($out === []) {
-            throw new RuntimeException('Gemini returned non-JSON: '.mb_substr(preg_replace('/\s+/u', ' ', $raw) ?? $raw, 0, 180));
-        }
+            $out = $this->parseTranslationJson($raw);
+            if ($out === []) {
+                $raw2 = $this->chat(
+                    $apiKey,
+                    $model,
+                    (string) $material,
+                    $instruction."\nIMPORTANT: Your previous reply was invalid. Output ONLY valid JSON object.",
+                    $timeout
+                );
+                if (is_string($raw2) && trim($raw2) !== '') {
+                    $out = $this->parseTranslationJson($raw2);
+                }
+            }
 
-        return $out;
+            if ($out === []) {
+                throw new RuntimeException('Gemini returned non-JSON: '.mb_substr(preg_replace('/\s+/u', ' ', $raw) ?? $raw, 0, 180));
+            }
+
+            return $out;
+        });
     }
 
     /**
@@ -101,7 +99,6 @@ PROMPT;
 
         $list = $decoded['items'] ?? null;
         if (! is_array($list)) {
-            // Sometimes model returns a bare array
             if (array_is_list($decoded)) {
                 $list = $decoded;
             } else {
@@ -152,10 +149,12 @@ PROMPT;
                 } elseif ($ch === '"') {
                     $inString = false;
                 }
+
                 continue;
             }
             if ($ch === '"') {
                 $inString = true;
+
                 continue;
             }
             if ($ch === $open) {

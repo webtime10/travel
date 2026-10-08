@@ -9,22 +9,48 @@ class DocxBlocksRuTranslator
     public function __construct(private GeminiTranslator $gemini) {}
 
     /**
-     * Translate a slice of sequential DOCX blocks. Mutates and returns meta.
-     * Skips blocks that already have text_ru. On hard Gemini failures, marks
-     * those ids (ru_skip) and continues with the next pending blocks.
+     * Translate a slice of HE blocks into a separate RU meta (text in Russian).
+     * Does not mutate HE meta. Skips blocks already filled in RU. On hard failures
+     * marks those ids (ru_skip on RU block) and continues.
      *
-     * @param  array<string,mixed>  $meta
-     * @return array{meta: array<string,mixed>, translated: int, remaining: int, total: int, done: bool, already: int, warning?: string}
+     * @param  array<string, mixed>  $heMeta
+     * @param  array<string, mixed>|null  $ruMeta
+     * @return array{
+     *   he_meta: array<string,mixed>,
+     *   ru_meta: array<string,mixed>,
+     *   translated: int,
+     *   remaining: int,
+     *   total: int,
+     *   done: bool,
+     *   already: int,
+     *   warning?: string
+     * }
      */
-    public function translateBatch(array $meta, int $limit = 12): array
+    public function translateBatch(array $heMeta, ?array $ruMeta = null, int $limit = 12): array
     {
-        $blocks = $meta['blocks'] ?? [];
-        if (! is_array($blocks)) {
-            $blocks = [];
+        $heMeta = DocxMetaHelper::purifyHebrew($heMeta);
+        $heBlocks = $heMeta['blocks'] ?? [];
+        if (! is_array($heBlocks)) {
+            $heBlocks = [];
         }
 
-        $total = $this->countTranslatable($blocks);
-        $already = $this->countTranslated($blocks);
+        if (! is_array($ruMeta) || ($ruMeta['format'] ?? '') !== 'docx_sequential_v1') {
+            $ruMeta = DocxMetaHelper::skeletonRussian($heMeta);
+        }
+
+        $ruBlocks = $ruMeta['blocks'] ?? [];
+        if (! is_array($ruBlocks)) {
+            $ruBlocks = [];
+        }
+
+        // Align RU skeleton length with HE if HE was re-imported
+        if (count($ruBlocks) !== count($heBlocks)) {
+            $ruMeta = DocxMetaHelper::skeletonRussian($heMeta);
+            $ruBlocks = $ruMeta['blocks'];
+        }
+
+        $total = DocxMetaHelper::countTranslatable($heBlocks);
+        $already = DocxMetaHelper::countTranslated($heBlocks, $ruBlocks);
 
         $skipIds = [];
         $translated = 0;
@@ -33,7 +59,7 @@ class DocxBlocksRuTranslator
 
         while ($rounds < 4 && $translated === 0) {
             $rounds++;
-            $pending = $this->collectPending($blocks, $limit, $skipIds);
+            $pending = $this->collectPending($heBlocks, $ruBlocks, $limit, $skipIds);
 
             if ($pending === []) {
                 break;
@@ -46,20 +72,21 @@ class DocxBlocksRuTranslator
                 foreach (array_keys($pending) as $id) {
                     $i = (int) $id;
                     $skipIds[$i] = true;
-                    if (isset($blocks[$i]) && is_array($blocks[$i])) {
-                        $blocks[$i]['ru_skip'] = true;
+                    if (isset($ruBlocks[$i]) && is_array($ruBlocks[$i])) {
+                        $ruBlocks[$i]['ru_skip'] = true;
                     }
                 }
+
                 continue;
             }
 
             foreach ($map as $id => $ru) {
                 $i = (int) $id;
-                if (! isset($blocks[$i]) || ! is_array($blocks[$i])) {
+                if (! isset($ruBlocks[$i]) || ! is_array($ruBlocks[$i])) {
                     continue;
                 }
-                $blocks[$i]['text_ru'] = $ru;
-                unset($blocks[$i]['ru_skip']);
+                $ruBlocks[$i]['text'] = $ru;
+                unset($ruBlocks[$i]['ru_skip'], $ruBlocks[$i]['text_ru']);
                 $translated++;
             }
 
@@ -69,22 +96,25 @@ class DocxBlocksRuTranslator
                     continue;
                 }
                 $skipIds[$i] = true;
-                if (isset($blocks[$i]) && is_array($blocks[$i])) {
-                    $blocks[$i]['ru_skip'] = true;
+                if (isset($ruBlocks[$i]) && is_array($ruBlocks[$i])) {
+                    $ruBlocks[$i]['ru_skip'] = true;
                 }
             }
         }
 
-        $meta['blocks'] = $blocks;
-        $translatedTotal = $this->countTranslated($blocks);
-        $meta['stats'] = array_merge($meta['stats'] ?? [], [
-            'translated_ru' => $translatedTotal,
+        $ruMeta['blocks'] = $ruBlocks;
+        $translatedTotal = DocxMetaHelper::countTranslated($heBlocks, $ruBlocks);
+        $ruMeta['language'] = 'ru';
+        $ruMeta['stats'] = array_merge($ruMeta['stats'] ?? [], [
+            'translated' => $translatedTotal,
+            'blocks' => count($ruBlocks),
         ]);
 
         $remaining = max(0, $total - $translatedTotal);
 
         $out = [
-            'meta' => $meta,
+            'he_meta' => $heMeta,
+            'ru_meta' => $ruMeta,
             'translated' => $translated,
             'remaining' => $remaining,
             'total' => $total,
@@ -101,26 +131,31 @@ class DocxBlocksRuTranslator
     }
 
     /**
-     * @param  list<mixed>  $blocks
+     * @param  list<mixed>  $heBlocks
+     * @param  list<mixed>  $ruBlocks
      * @param  array<int, bool>  $skipIds
      * @return array<int, string>
      */
-    private function collectPending(array &$blocks, int $limit, array $skipIds): array
+    private function collectPending(array &$heBlocks, array &$ruBlocks, int $limit, array $skipIds): array
     {
         $pending = [];
-        foreach ($blocks as $i => $block) {
-            if (! is_array($block) || ($block['type'] ?? '') === 'image') {
+        foreach ($heBlocks as $i => $he) {
+            if (! is_array($he) || ($he['type'] ?? '') === 'image') {
                 continue;
             }
             $i = (int) $i;
-            if (! empty($skipIds[$i]) || ! empty($block['ru_skip'])) {
+            if (! empty($skipIds[$i])) {
                 continue;
             }
-            $text = trim((string) ($block['text'] ?? ''));
+            $ru = $ruBlocks[$i] ?? null;
+            if (is_array($ru) && ! empty($ru['ru_skip'])) {
+                continue;
+            }
+            $text = trim((string) ($he['text'] ?? ''));
             if ($text === '') {
                 continue;
             }
-            if (trim((string) ($block['text_ru'] ?? '')) !== '') {
+            if (is_array($ru) && trim((string) ($ru['text'] ?? '')) !== '') {
                 continue;
             }
             $pending[$i] = $text;
@@ -129,21 +164,21 @@ class DocxBlocksRuTranslator
             }
         }
 
-        // Only previously skipped left — retry a wave
         if ($pending === []) {
-            foreach ($blocks as $i => $block) {
-                if (! is_array($block) || ($block['type'] ?? '') === 'image') {
+            foreach ($heBlocks as $i => $he) {
+                if (! is_array($he) || ($he['type'] ?? '') === 'image') {
                     continue;
                 }
                 $i = (int) $i;
-                if (empty($block['ru_skip'])) {
+                $ru = $ruBlocks[$i] ?? null;
+                if (! is_array($ru) || empty($ru['ru_skip'])) {
                     continue;
                 }
-                $text = trim((string) ($block['text'] ?? ''));
-                if ($text === '' || trim((string) ($block['text_ru'] ?? '')) !== '') {
+                $text = trim((string) ($he['text'] ?? ''));
+                if ($text === '' || trim((string) ($ru['text'] ?? '')) !== '') {
                     continue;
                 }
-                unset($blocks[$i]['ru_skip']);
+                unset($ruBlocks[$i]['ru_skip']);
                 $pending[$i] = $text;
                 if (count($pending) >= $limit) {
                     break;
@@ -198,44 +233,5 @@ class DocxBlocksRuTranslator
         }
 
         return $map;
-    }
-
-    /**
-     * @param  list<mixed>  $blocks
-     */
-    private function countTranslatable(array $blocks): int
-    {
-        $n = 0;
-        foreach ($blocks as $block) {
-            if (! is_array($block) || ($block['type'] ?? '') === 'image') {
-                continue;
-            }
-            if (trim((string) ($block['text'] ?? '')) !== '') {
-                $n++;
-            }
-        }
-
-        return $n;
-    }
-
-    /**
-     * @param  list<mixed>  $blocks
-     */
-    private function countTranslated(array $blocks): int
-    {
-        $n = 0;
-        foreach ($blocks as $block) {
-            if (! is_array($block) || ($block['type'] ?? '') === 'image') {
-                continue;
-            }
-            if (trim((string) ($block['text'] ?? '')) === '') {
-                continue;
-            }
-            if (trim((string) ($block['text_ru'] ?? '')) !== '') {
-                $n++;
-            }
-        }
-
-        return $n;
     }
 }

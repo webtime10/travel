@@ -1,5 +1,18 @@
 /vendor
 /adminka
+/public/uploads/
+
+
+/public/storage
+
+# Игнорируем всё внутри storage, кроме базовой структуры
+/storage/app/*
+/storage/framework/cache/*
+/storage/framework/sessions/*
+/storage/framework/views/*
+/storage/logs/*
+
+
 /doc
-.env
+*.env*
 *.zip

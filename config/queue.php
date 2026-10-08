@@ -126,4 +126,22 @@ return [
         'table' => 'failed_jobs',
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Queue Worker Defaults
+    |--------------------------------------------------------------------------
+    |
+    | Defaults for `php artisan queue:work` (memory stop threshold + job timeout).
+    | PHP CLI memory_limit is raised separately in AppServiceProvider.
+    |
+    */
+
+    'worker' => [
+        'memory' => (int) env('QUEUE_WORKER_MEMORY', 2048),
+        'timeout' => (int) env('QUEUE_WORKER_TIMEOUT', 900),
+        // 0 = no max-jobs limit for plain queue:work; work-forever uses 1 per cycle
+        'max_jobs' => (int) env('QUEUE_WORKER_MAX_JOBS', 0),
+        'php_memory_limit' => env('PHP_CLI_MEMORY_LIMIT', '2048M'),
+    ],
+
 ];

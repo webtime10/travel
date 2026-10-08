@@ -8,6 +8,7 @@
     <a href="{{ route('admin.categories.create') }}" class="btn btn-icon btn-primary" title="Add"><i class="bx bx-plus bx-md"></i></a>
   </div>
 </div>
+
 <form id="categoriesBulkDeleteForm" method="post" action="{{ route('admin.categories.bulk-delete') }}">@csrf</form>
 <div class="card">
   <div class="table-responsive text-nowrap">
@@ -26,15 +27,20 @@
       <tbody class="table-border-bottom-0">
         @forelse($categories as $item)
           @php
+            $heId = $heLanguage?->id;
+            $heDesc = $heId ? $item->descriptions->firstWhere('language_id', $heId) : null;
             $defId = $defaultLanguage?->id;
-            $d = $defId ? $item->descriptions->firstWhere('language_id', $defId) : null;
+            $d = $heDesc ?? ($defId ? $item->descriptions->firstWhere('language_id', $defId) : null);
             $pd = $item->parent && $defId ? $item->parent->descriptions->firstWhere('language_id', $defId) : null;
+            if ($item->parent && $heId) {
+              $pd = $item->parent->descriptions->firstWhere('language_id', $heId) ?? $pd;
+            }
           @endphp
           <tr>
             <td><input type="checkbox" name="selected[]" value="{{ $item->id }}" class="form-check-input row-check" form="categoriesBulkDeleteForm"></td>
             <td>{{ $item->id }}</td>
-            <td>{{ $d->name ?? '—' }}</td>
-            <td>{{ $pd->name ?? '—' }}</td>
+            <td dir="rtl">{{ $d->name ?? '—' }}</td>
+            <td dir="rtl">{{ $pd->name ?? '—' }}</td>
             <td>{{ $item->sort_order }}</td>
             <td>@if($item->status)<span class="badge bg-label-success">On</span>@else<span class="badge bg-label-secondary">Off</span>@endif</td>
             <td class="text-nowrap">

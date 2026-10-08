@@ -29,12 +29,45 @@
       --bs-success-contrast: #fff;
     }
     .page-toolbar .btn { margin-left: .35rem; }
-    /* Sneat .table .btn-icon locks color to table text and blocks white icons on hover */
-    .table .btn.btn-icon:hover,
-    .table .btn.btn-icon:focus,
-    .table .btn.btn-icon:focus-visible,
-    .table .btn.btn-icon:active {
-      color: var(--bs-btn-hover-color);
+    /* Table action icons: always visible; color change only on hover (no active/focus "empty" look) */
+    .table td .btn.btn-icon {
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    .table td .btn.btn-icon.btn-outline-primary,
+    .table td .btn.btn-icon.btn-outline-primary:focus,
+    .table td .btn.btn-icon.btn-outline-primary:focus-visible,
+    .table td .btn.btn-icon.btn-outline-primary:active,
+    .table td .btn.btn-icon.btn-outline-primary.active,
+    .table td .btn.btn-icon.btn-outline-primary:active:focus {
+      color: #696cff !important;
+      background-color: transparent !important;
+      border-color: #696cff !important;
+      box-shadow: none !important;
+    }
+    .table td .btn.btn-icon.btn-outline-primary:hover {
+      color: #fff !important;
+      background-color: #696cff !important;
+      border-color: #696cff !important;
+    }
+    .table td .btn.btn-icon.btn-outline-danger,
+    .table td .btn.btn-icon.btn-outline-danger:focus,
+    .table td .btn.btn-icon.btn-outline-danger:focus-visible,
+    .table td .btn.btn-icon.btn-outline-danger:active,
+    .table td .btn.btn-icon.btn-outline-danger.active,
+    .table td .btn.btn-icon.btn-outline-danger:active:focus {
+      color: #ff3e1d !important;
+      background-color: transparent !important;
+      border-color: #ff3e1d !important;
+      box-shadow: none !important;
+    }
+    .table td .btn.btn-icon.btn-outline-danger:hover {
+      color: #fff !important;
+      background-color: #ff3e1d !important;
+      border-color: #ff3e1d !important;
+    }
+    .table td.text-nowrap {
+      user-select: none;
     }
     .checkbox-select-toggle::after { display: none; }
     .checkbox-select-menu {
@@ -119,6 +152,8 @@
       display: none;
     }
   </style>
+  @yield('styles')
+  @stack('styles')
 </head>
 <body>
 <div class="layout-wrapper layout-content-navbar">
@@ -158,6 +193,18 @@
             <div>Languages</div>
           </a>
         </li>
+        <li class="menu-item {{ request()->routeIs('admin.database.*') ? 'active' : '' }}">
+          <a href="{{ route('admin.database.index') }}" class="menu-link">
+            <i class="menu-icon tf-icons bx bx-data"></i>
+            <div>Database</div>
+          </a>
+        </li>
+        <li class="menu-item {{ request()->routeIs('admin.test.*') ? 'active' : '' }}">
+          <a href="{{ route('admin.test.index') }}" class="menu-link">
+            <i class="menu-icon tf-icons bx bx-message-rounded-dots"></i>
+            <div>Test</div>
+          </a>
+        </li>
         @if(auth()->user()?->isAdmin())
         <li class="menu-item {{ request()->routeIs('admin.users.*') ? 'active' : '' }}">
           <a href="{{ route('admin.users.index') }}" class="menu-link">
@@ -172,6 +219,12 @@
           </a>
         </li>
         @endif
+        <li class="menu-item {{ request()->routeIs('admin.help-categories.*') ? 'active' : '' }}">
+          <a href="{{ route('admin.help-categories.index') }}" class="menu-link">
+            <i class="menu-icon tf-icons bx bx-help-circle"></i>
+            <div>Help</div>
+          </a>
+        </li>
       </ul>
     </aside>
 
@@ -257,5 +310,6 @@
   });
 </script>
 @yield('scripts')
+@stack('scripts')
 </body>
 </html>

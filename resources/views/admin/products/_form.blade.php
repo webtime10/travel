@@ -2,34 +2,10 @@
   $item = $product ?? null;
   $selectedCats = array_map('intval', (array) old('category_ids', $item?->categories?->pluck('id')->all() ?? []));
   $selectedCount = count($selectedCats);
-  $meta = $item?->meta;
-  $blocks = is_array($meta) ? ($meta['blocks'] ?? []) : [];
-  $stats = is_array($meta) ? ($meta['stats'] ?? []) : [];
-  $metaPhotos = is_array($meta) ? ($meta['images'] ?? []) : [];
-  $isSequential = is_array($meta) && ($meta['format'] ?? '') === 'docx_sequential_v1';
+  $heMeta = is_array($item?->meta) ? $item->meta : null;
+  $ruMeta = is_array($item?->meta_ru) ? $item->meta_ru : null;
+  $isSequential = is_array($heMeta) && ($heMeta['format'] ?? '') === 'docx_sequential_v1';
   $previewLimit = 200;
-  $previewBlocks = $isSequential ? array_slice($blocks, 0, $previewLimit) : [];
-  $translatedRu = (int) ($stats['translated_ru'] ?? 0);
-  $blocksTotal = $isSequential ? count($blocks) : 0;
-  $translatableTotal = 0;
-  $translatedRuCounted = 0;
-  if ($isSequential) {
-    foreach ($blocks as $b) {
-      if (! is_array($b) || ($b['type'] ?? '') === 'image') {
-        continue;
-      }
-      if (trim((string) ($b['text'] ?? '')) === '') {
-        continue;
-      }
-      $translatableTotal++;
-      if (trim((string) ($b['text_ru'] ?? '')) !== '') {
-        $translatedRuCounted++;
-      }
-    }
-    if ($translatedRuCounted > $translatedRu) {
-      $translatedRu = $translatedRuCounted;
-    }
-  }
 @endphp
 
 @if($languages->isEmpty())
@@ -48,6 +24,30 @@
       $c = $language->code;
       $desc = $item?->descriptions?->firstWhere('language_id', $language->id);
       $isRu = strtolower($c) === 'ru';
+      $meta = $isRu ? $ruMeta : $heMeta;
+      $blocks = is_array($meta) ? ($meta['blocks'] ?? []) : [];
+      $stats = is_array($meta) ? ($meta['stats'] ?? []) : [];
+      $previewBlocks = ($isSequential && is_array($blocks)) ? array_slice($blocks, 0, $previewLimit) : [];
+      $blocksTotal = ($isSequential && is_array($blocks)) ? count($blocks) : 0;
+      $heBlocks = is_array($heMeta) ? ($heMeta['blocks'] ?? []) : [];
+      $ruBlocks = is_array($ruMeta) ? ($ruMeta['blocks'] ?? []) : [];
+      $translatableTotal = 0;
+      $translatedRu = 0;
+      if ($isSequential && is_array($heBlocks)) {
+        foreach ($heBlocks as $bi => $b) {
+          if (! is_array($b) || ($b['type'] ?? '') === 'image') {
+            continue;
+          }
+          if (trim((string) ($b['text'] ?? '')) === '') {
+            continue;
+          }
+          $translatableTotal++;
+          $rb = is_array($ruBlocks) ? ($ruBlocks[$bi] ?? null) : null;
+          if (is_array($rb) && trim((string) ($rb['text'] ?? '')) !== '') {
+            $translatedRu++;
+          }
+        }
+      }
     @endphp
     <div class="tab-pane fade @if($index === 0) show active @endif" id="ppane-{{ $c }}" role="tabpanel">
       <div class="mb-3">
@@ -68,7 +68,7 @@
               type="button"
               class="btn btn-icon btn-outline-dark docx-json-btn"
               title="Показать JSON"
-              data-url="{{ route('admin.products.docx-json', $item->id) }}"
+              data-url="{{ route('admin.products.docx-json', $item->id) }}?lang={{ $isRu ? 'ru' : 'he' }}"
             >
               <span class="d-inline-flex align-items-center justify-content-center" style="width:1.5rem;height:1.5rem;font-weight:700;font-size:.75rem;line-height:1;font-family:ui-monospace,monospace;" aria-hidden="true">{ }</span>
             </button>
@@ -87,7 +87,7 @@
               <button
                 type="button"
                 class="btn btn-icon btn-outline-primary docx-translate-ru-btn"
-                title="Перевести на русский"
+                title="Перевести на русский (отдельный JSON)"
                 data-url="{{ route('admin.products.translate-ru', $item->id) }}"
                 data-csrf="{{ csrf_token() }}"
                 data-already="{{ $translatedRu }}"
@@ -99,19 +99,20 @@
           </div>
         </div>
         <p class="mb-1 small text-muted">
-          Source: {{ $meta['source_file'] ?? '—' }}
+          Source: {{ ($heMeta['source_file'] ?? '—') }}
+          · model {{ $item->model ?? '—' }}
           · blocks {{ $stats['blocks'] ?? count($blocks) }}
           @if($isRu)
-            · RU {{ $translatedRu }}
+            · RU {{ $translatedRu }}/{{ $translatableTotal }}
           @endif
-          @if(!empty($meta['coverage_report']['coverage_percent']))
-            · coverage {{ $meta['coverage_report']['coverage_percent'] }}%
+          @if(!$isRu && !empty($heMeta['coverage_report']['coverage_percent']))
+            · coverage {{ $heMeta['coverage_report']['coverage_percent'] }}%
           @endif
         </p>
 
         <div class="docx-json-panel border rounded p-3 mb-3" style="display:none;">
           <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
-            <div class="fw-semibold">JSON</div>
+            <div class="fw-semibold">JSON ({{ strtoupper($isRu ? 'ru' : 'he') }})</div>
             <div class="d-flex align-items-center gap-1">
               <button type="button" class="btn btn-sm btn-outline-secondary docx-json-copy">Copy</button>
               <button type="button" class="btn btn-sm btn-outline-secondary docx-json-close">Закрыть</button>
@@ -159,7 +160,7 @@
         >
           <div class="docx-blocks-list">
           @if($isRu && $translatedRu === 0)
-            <p class="text-muted mb-0 docx-blocks-empty">Русская вкладка пустая. Нажмите A文 — появится тот же JSON на русском.</p>
+            <p class="text-muted mb-0 docx-blocks-empty">Русская вкладка пустая. Нажмите A文 — создастся отдельный русский JSON.</p>
           @else
             @foreach($previewBlocks as $i => $block)
               @if(($block['type'] ?? '') === 'image')
@@ -172,16 +173,14 @@
                 </div>
               @else
                 @php
-                  $line = $isRu
-                    ? trim((string) ($block['text_ru'] ?? ''))
-                    : (string) ($block['text'] ?? '');
+                  $line = (string) ($block['text'] ?? '');
                 @endphp
                 <div class="mb-2 docx-block-item">
                   <span class="badge bg-label-secondary">#{{ $i + 1 }} {{ $block['type'] ?? 'text' }}</span>
                   @if(!empty($block['style']))
                     <span class="text-muted small">{{ $block['style'] }}</span>
                   @endif
-                  @if($isRu && $line === '')
+                  @if($isRu && trim($line) === '')
                     <div class="text-muted" style="white-space:pre-wrap;">—</div>
                   @else
                     <div style="white-space:pre-wrap;">{{ $line }}</div>
@@ -245,6 +244,10 @@
       </div>
     </div>
   @endif
+</div>
+<div class="mb-3">
+  <label class="form-label">Model</label>
+  <input type="text" name="model" class="form-control" style="max-width:12rem" value="{{ old('model', $item->model ?? '') }}" maxlength="64" placeholder="1, 2, 3…">
 </div>
 <div class="mb-3">
   <label class="form-label">Sort order</label>
@@ -635,22 +638,10 @@
   </script>
 @endif
 
-@if(!empty($meta))
-  @if(!$isSequential)
-    <hr class="my-4">
-    <h6 class="mb-2">DOCX data</h6>
-    <p class="mb-1"><strong>Title RU:</strong> {{ $meta['title_ru'] ?? '—' }}</p>
-    <p class="mb-1"><strong>Days:</strong> {{ count($meta['days'] ?? []) }} · <strong>Photos:</strong> {{ count($metaPhotos) }}</p>
-  @endif
-  @if(count($metaPhotos))
-    <div class="d-flex flex-wrap gap-2 mt-2 mb-3">
-      @foreach(array_slice($metaPhotos, 0, 12) as $photo)
-        <img src="{{ asset($photo) }}" alt="" style="width:72px;height:72px;object-fit:cover;border-radius:6px;">
-      @endforeach
-    </div>
-  @endif
-  <details>
-    <summary class="mb-2">Full JSON</summary>
-    <pre class="p-3 bg-lighter rounded" style="max-height:24rem;overflow:auto;white-space:pre-wrap;">{{ json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT) }}</pre>
-  </details>
+@if($isSequential && is_array($heMeta) && !empty($heMeta['images']))
+  <div class="d-flex flex-wrap gap-2 mt-2 mb-3">
+    @foreach(array_slice($heMeta['images'], 0, 12) as $photo)
+      <img src="{{ asset($photo) }}" alt="" style="width:72px;height:72px;object-fit:cover;border-radius:6px;">
+    @endforeach
+  </div>
 @endif
