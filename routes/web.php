@@ -37,6 +37,8 @@ Route::prefix('admin')
         Route::resource('help-categories', HelpCategoryController::class)->except(['show']);
 
         Route::get('test', [TestController::class, 'index'])->name('test.index');
+        Route::get('test/rag-vector', [TestController::class, 'ragVector'])->name('test.rag-vector');
+        Route::post('test/agent', [TestController::class, 'agent'])->name('test.agent');
         Route::post('test/search', [TestController::class, 'search'])->name('test.search');
         Route::post('test/chat', [TestController::class, 'chat'])->name('test.chat');
         Route::post('test/prompt', [TestController::class, 'savePrompt'])->name('test.prompt.save');

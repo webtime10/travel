@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\AppSetting;
+use App\Services\GeminiAgentRagService;
 use App\Services\GeminiChatService;
 use App\Services\GeminiKeyPool;
 use App\Services\RagSearchService;
@@ -16,18 +17,37 @@ class TestController extends Controller
 {
     public const PROMPT_KEY = 'test.system_prompt';
 
+    public const AGENT_PROMPT_KEY = 'test.agent_system_prompt';
+
     public function index(GeminiKeyPool $keys)
     {
-        $pageTitle = 'Test';
-        $systemPrompt = AppSetting::getValue(self::PROMPT_KEY);
+        $pageTitle = 'Test — Агентный RAG';
+        $systemPrompt = AppSetting::getValue(self::AGENT_PROMPT_KEY);
         if ($systemPrompt === null || trim($systemPrompt) === '') {
-            $systemPrompt = $this->defaultPrompt();
+            $systemPrompt = $this->defaultAgentPrompt();
         }
 
         return view('admin.test.index', [
             'pageTitle' => $pageTitle,
             'geminiKeys' => $keys->count(),
             'systemPrompt' => $systemPrompt,
+            'testMode' => 'agent',
+        ]);
+    }
+
+    public function ragVector(GeminiKeyPool $keys)
+    {
+        $pageTitle = 'Test — Vector RAG';
+        $systemPrompt = AppSetting::getValue(self::PROMPT_KEY);
+        if ($systemPrompt === null || trim($systemPrompt) === '') {
+            $systemPrompt = $this->defaultPrompt();
+        }
+
+        return view('admin.test.rag-vector', [
+            'pageTitle' => $pageTitle,
+            'geminiKeys' => $keys->count(),
+            'systemPrompt' => $systemPrompt,
+            'testMode' => 'vector',
         ]);
     }
 
@@ -35,15 +55,49 @@ class TestController extends Controller
     {
         $request->validate([
             'prompt' => 'nullable|string|max:50000',
+            'mode' => 'nullable|string|in:vector,agent',
         ]);
 
+        $mode = (string) $request->input('mode', 'vector');
+        $key = $mode === 'agent' ? self::AGENT_PROMPT_KEY : self::PROMPT_KEY;
         $prompt = (string) $request->input('prompt', '');
-        AppSetting::putValue(self::PROMPT_KEY, $prompt);
+        AppSetting::putValue($key, $prompt);
 
         return response()->json([
             'ok' => true,
             'message' => 'Prompt saved',
             'length' => mb_strlen($prompt),
+            'mode' => $mode,
+        ]);
+    }
+
+    public function agent(Request $request, GeminiAgentRagService $agent): JsonResponse
+    {
+        $request->validate([
+            'message' => 'required|string|max:12000',
+            'prompt' => 'nullable|string|max:50000',
+        ]);
+
+        @set_time_limit(900);
+
+        $prompt = $request->filled('prompt') && trim((string) $request->input('prompt')) !== ''
+            ? (string) $request->input('prompt')
+            : (string) (AppSetting::getValue(self::AGENT_PROMPT_KEY) ?: $this->defaultAgentPrompt());
+
+        try {
+            $result = $agent->run((string) $request->input('message'), $prompt);
+        } catch (Throwable $e) {
+            return $this->errorResponse('agent', $e);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'step' => 'agent',
+            'reply' => $result['reply'],
+            'steps' => $result['steps'],
+            'sources' => $result['sources'],
+            'tool_calls' => $result['tool_calls'],
+            'total_ms' => $result['total_ms'],
         ]);
     }
 
@@ -195,6 +249,18 @@ class TestController extends Controller
 
 Язык ответа = язык сообщения пользователя (русский → русский, иврит → иврит и т.д.).
 Стиль: кратко, по делу. Маршруты — списком по дням.
+PROMPT;
+    }
+
+    private function defaultAgentPrompt(): string
+    {
+        return <<<'PROMPT'
+Ты туристический агент. Есть tool search_database (векторный поиск по каталогу).
+
+1) Разбей запрос на смысловые поиски (дни / регионы / места) и вызывай search_database несколько раз при необходимости.
+2) Собирай маршрут из результатов tool. Приоритет — база; пробелы можно кратко закрыть знаниями.
+3) Язык ответа = язык пользователя. Маршрут — по дням. В конце — model источников.
+4) Когда данных достаточно — финальный текстовый ответ без tool.
 PROMPT;
     }
 }

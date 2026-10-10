@@ -199,11 +199,23 @@
             <div>Database</div>
           </a>
         </li>
-        <li class="menu-item {{ request()->routeIs('admin.test.*') ? 'active' : '' }}">
-          <a href="{{ route('admin.test.index') }}" class="menu-link">
+        <li class="menu-item {{ request()->routeIs('admin.test.*') ? 'active open' : '' }}">
+          <a href="javascript:void(0);" class="menu-link menu-toggle">
             <i class="menu-icon tf-icons bx bx-message-rounded-dots"></i>
             <div>Test</div>
           </a>
+          <ul class="menu-sub">
+            <li class="menu-item {{ request()->routeIs('admin.test.index') ? 'active' : '' }}">
+              <a href="{{ route('admin.test.index') }}" class="menu-link">
+                <div>Агентный RAG</div>
+              </a>
+            </li>
+            <li class="menu-item {{ request()->routeIs('admin.test.rag-vector') ? 'active' : '' }}">
+              <a href="{{ route('admin.test.rag-vector') }}" class="menu-link">
+                <div>Vector RAG</div>
+              </a>
+            </li>
+          </ul>
         </li>
         @if(auth()->user()?->isAdmin())
         <li class="menu-item {{ request()->routeIs('admin.users.*') ? 'active' : '' }}">
