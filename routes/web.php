@@ -39,6 +39,7 @@ Route::prefix('admin')
         Route::get('test', [TestController::class, 'index'])->name('test.index');
         Route::get('test/rag-vector', [TestController::class, 'ragVector'])->name('test.rag-vector');
         Route::post('test/agent', [TestController::class, 'agent'])->name('test.agent');
+        Route::get('test/agent/{runId}', [TestController::class, 'agentStatus'])->name('test.agent.status');
         Route::post('test/search', [TestController::class, 'search'])->name('test.search');
         Route::post('test/chat', [TestController::class, 'chat'])->name('test.chat');
         Route::post('test/prompt', [TestController::class, 'savePrompt'])->name('test.prompt.save');

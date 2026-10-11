@@ -19,6 +19,7 @@ class GeminiAgentRagService
     ) {}
 
     /**
+     * @param  (callable(list<array<string, mixed>>): void)|null  $onProgress
      * @return array{
      *   reply: string,
      *   steps: list<array<string, mixed>>,
@@ -27,7 +28,7 @@ class GeminiAgentRagService
      *   total_ms: int
      * }
      */
-    public function run(string $userMessage, ?string $systemPrompt = null): array
+    public function run(string $userMessage, ?string $systemPrompt = null, ?callable $onProgress = null): array
     {
         $userMessage = trim($userMessage);
         if ($userMessage === '') {
@@ -38,6 +39,12 @@ class GeminiAgentRagService
         $steps = [];
         $allSources = [];
         $toolCalls = 0;
+
+        $push = function () use (&$steps, $onProgress): void {
+            if ($onProgress !== null) {
+                $onProgress($steps);
+            }
+        };
 
         $systemPrompt = trim((string) ($systemPrompt ?: $this->defaultSystemPrompt()));
         $contents = [
@@ -52,6 +59,7 @@ class GeminiAgentRagService
             'title' => 'Старт агента',
             'detail' => 'Передан запрос пользователя. Gemini может вызывать search_database несколько раз.',
         ];
+        $push();
 
         for ($step = 1; $step <= self::MAX_STEPS; $step++) {
             $steps[] = [
@@ -59,6 +67,7 @@ class GeminiAgentRagService
                 'title' => 'Итерация '.$step.' — запрос к Gemini',
                 'detail' => 'Модель решает: вызвать search_database или дать финальный ответ.',
             ];
+            $push();
 
             $response = $this->generate($contents, $systemPrompt);
             $candidate = $response['candidates'][0]['content'] ?? null;
@@ -101,6 +110,7 @@ class GeminiAgentRagService
                     'title' => 'Финальный ответ',
                     'detail' => 'Данных достаточно — Gemini собрал ответ без нового поиска.',
                 ];
+                $push();
 
                 return [
                     'reply' => $reply,
@@ -128,6 +138,7 @@ class GeminiAgentRagService
                         'title' => 'Неизвестный tool: '.$name,
                         'detail' => json_encode($args, JSON_UNESCAPED_UNICODE),
                     ];
+                    $push();
                 } else {
                     $query = trim((string) ($args['query'] ?? ''));
                     $limit = max(1, min(12, (int) ($args['limit'] ?? 8)));
@@ -137,6 +148,7 @@ class GeminiAgentRagService
                         'detail' => 'query="'.$query.'" · limit='.$limit,
                         'query' => $query,
                     ];
+                    $push();
 
                     $tSearch = microtime(true);
                     try {
@@ -171,6 +183,7 @@ class GeminiAgentRagService
                                 .($result['model_filter'] ? ' · filter='.$result['model_filter'] : ''),
                             'sources' => $sources,
                         ];
+                        $push();
                     } catch (\Throwable $e) {
                         Log::warning('Agent search_database failed', ['message' => $e->getMessage()]);
                         $payload = [
@@ -182,6 +195,7 @@ class GeminiAgentRagService
                             'title' => 'Ошибка search_database',
                             'detail' => $e->getMessage(),
                         ];
+                        $push();
                     }
                 }
 

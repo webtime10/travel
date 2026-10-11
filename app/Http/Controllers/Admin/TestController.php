@@ -3,8 +3,9 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\RunAgentRagJob;
 use App\Models\AppSetting;
-use App\Services\GeminiAgentRagService;
+use App\Services\AgentRagRunStore;
 use App\Services\GeminiChatService;
 use App\Services\GeminiKeyPool;
 use App\Services\RagSearchService;
@@ -71,33 +72,52 @@ class TestController extends Controller
         ]);
     }
 
-    public function agent(Request $request, GeminiAgentRagService $agent): JsonResponse
+    public function agent(Request $request, AgentRagRunStore $store): JsonResponse
     {
         $request->validate([
             'message' => 'required|string|max:12000',
             'prompt' => 'nullable|string|max:50000',
         ]);
 
-        @set_time_limit(900);
-
+        $message = (string) $request->input('message');
         $prompt = $request->filled('prompt') && trim((string) $request->input('prompt')) !== ''
             ? (string) $request->input('prompt')
             : (string) (AppSetting::getValue(self::AGENT_PROMPT_KEY) ?: $this->defaultAgentPrompt());
 
-        try {
-            $result = $agent->run((string) $request->input('message'), $prompt);
-        } catch (Throwable $e) {
-            return $this->errorResponse('agent', $e);
+        $runId = $store->create($message);
+        RunAgentRagJob::dispatch($runId, $message, $prompt);
+
+        return response()->json([
+            'ok' => true,
+            'step' => 'agent_queued',
+            'run_id' => $runId,
+            'status' => 'queued',
+            'message' => 'Задача в очереди. Нужен worker: php artisan queue:work или queue:work-forever',
+        ]);
+    }
+
+    public function agentStatus(string $runId, AgentRagRunStore $store): JsonResponse
+    {
+        $data = $store->get($runId);
+        if ($data === null) {
+            return response()->json([
+                'ok' => false,
+                'step' => 'agent_status',
+                'message' => 'Run not found or expired',
+            ], 404);
         }
 
         return response()->json([
             'ok' => true,
-            'step' => 'agent',
-            'reply' => $result['reply'],
-            'steps' => $result['steps'],
-            'sources' => $result['sources'],
-            'tool_calls' => $result['tool_calls'],
-            'total_ms' => $result['total_ms'],
+            'step' => 'agent_status',
+            'run_id' => $runId,
+            'status' => $data['status'] ?? 'unknown',
+            'steps' => $data['steps'] ?? [],
+            'reply' => $data['reply'] ?? null,
+            'sources' => $data['sources'] ?? [],
+            'tool_calls' => $data['tool_calls'] ?? 0,
+            'total_ms' => $data['total_ms'] ?? null,
+            'error' => $data['error'] ?? null,
         ]);
     }
 

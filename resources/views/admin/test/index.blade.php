@@ -29,6 +29,7 @@
     </ol>
     <div class="small text-muted">
       Пример: «26–28 октября, Италия, 3 дня, семья» → поиск «Гарда дети» → потом «Венеция 1 день» → итоговый план.
+      Запрос идёт в очередь (без 504): нужен <code>php artisan queue:work</code> или <code>queue:work-forever</code>.
     </div>
   </div>
 </div>
@@ -113,11 +114,25 @@
   const promptSave = document.getElementById('agentPromptSave');
   const promptStatus = document.getElementById('agentPromptStatus');
   const agentUrl = @json(route('admin.test.agent'));
+  const agentStatusUrlTpl = @json(route('admin.test.agent.status', ['runId' => '__RUN__']));
   const promptUrl = @json(route('admin.test.prompt.save'));
   const csrf = @json(csrf_token());
   const sendDefault = sendBtn.textContent;
   let timerId = null;
   let timerStartedAt = 0;
+  let pollCancelled = false;
+
+  function agentStatusUrl(runId) {
+    return agentStatusUrlTpl.replace('__RUN__', encodeURIComponent(runId));
+  }
+
+  function stopPoll() {
+    pollCancelled = true;
+  }
+
+  function sleep(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  }
 
   function clearError() {
     err.style.display = 'none';
@@ -274,17 +289,53 @@
     }
   });
 
+  async function pollUntilDone(runId) {
+    pollCancelled = false;
+    for (let ticks = 0; ticks < 600; ticks++) {
+      if (pollCancelled) {
+        throw new Error('Опрос остановлен');
+      }
+      const res = await fetch(agentStatusUrl(runId), {
+        headers: {
+          'Accept': 'application/json',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+      });
+      const data = await readJson(res);
+      if (!res.ok || !data.ok) {
+        throw new Error(data.message || ('HTTP ' + res.status));
+      }
+      if (Array.isArray(data.steps) && data.steps.length) {
+        renderSteps(data.steps);
+      }
+      const status = data.status || '';
+      if (status === 'queued') {
+        setBusy(true, 'В очереди…', 'Нужен php artisan queue:work (или queue:work-forever)');
+      } else if (status === 'running') {
+        const last = (data.steps || []).slice(-1)[0];
+        setBusy(true, last && last.title ? last.title : 'Агент работает…', last && last.detail ? last.detail : '');
+      } else if (status === 'done') {
+        return data;
+      } else if (status === 'failed') {
+        throw new Error(data.error || 'Agent failed');
+      }
+      await sleep(1500);
+    }
+    throw new Error('Таймаут ожидания (15 мин). Проверьте queue:work.');
+  }
+
   form.addEventListener('submit', async function (e) {
     e.preventDefault();
     const message = (input.value || '').trim();
     if (!message || sendBtn.disabled) return;
     clearError();
+    stopPoll();
     addBubble('user', message);
     input.value = '';
     sendBtn.disabled = true;
     sendBtn.textContent = 'Ждите…';
-    setBusy(true, 'Агент думает и ищет…', 'Итерации search_database + сборка ответа');
-    renderSteps([{ type: 'start', title: 'Отправка на сервер', detail: 'Ждём цикл Gemini ↔ Laravel…' }]);
+    setBusy(true, 'Ставим в очередь…', 'HTTP сразу отвечает; длинный цикл идёт в worker');
+    renderSteps([{ type: 'start', title: 'Отправка в очередь', detail: 'POST → job → poll статуса' }]);
 
     try {
       const res = await fetch(agentUrl, {
@@ -301,20 +352,27 @@
         }),
       });
       const data = await readJson(res);
-      if (!res.ok || !data.ok) {
+      if (!res.ok || !data.ok || !data.run_id) {
         const parts = [data.message || ('HTTP ' + res.status)];
         if (data.step) parts.unshift('step: ' + data.step);
         if (data.error_file) parts.push(data.error_file);
         throw new Error(parts.join('\n'));
       }
-      renderSteps(data.steps || []);
-      addBubble('model', data.reply, data.sources || [], {
-        tool_calls: data.tool_calls,
-        total_ms: data.total_ms,
+      renderSteps([{
+        type: 'start',
+        title: 'В очереди',
+        detail: 'run_id=' + data.run_id + '. Ждём worker…',
+      }]);
+      const result = await pollUntilDone(data.run_id);
+      renderSteps(result.steps || []);
+      addBubble('model', result.reply || '', result.sources || [], {
+        tool_calls: result.tool_calls,
+        total_ms: result.total_ms,
       });
     } catch (ex) {
       showError(ex.message || String(ex));
     } finally {
+      stopPoll();
       setBusy(false);
       sendBtn.disabled = false;
       sendBtn.textContent = sendDefault;
@@ -323,6 +381,7 @@
   });
 
   clearBtn.addEventListener('click', function () {
+    stopPoll();
     log.innerHTML = '<div class="text-muted small">Cleared.</div>';
     renderSteps([]);
     stepsEl.innerHTML = '<div class="text-muted small">Лог очищен.</div>';
