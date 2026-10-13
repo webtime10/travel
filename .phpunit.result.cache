@@ -1,0 +1,1 @@
+{"version":2,"defects":[],"times":{"Tests\\Feature\\PlaceGeocoderTest::test_seed_places_enrich_coherent_garda_day":0.378,"Tests\\Feature\\PlaceGeocoderTest::test_mixed_como_and_garda_day_is_not_geo_ok":0.003,"Tests\\Feature\\PlaceGeocoderTest::test_distance_between_malcesine_and_sirmione_is_plausible":0.001}}

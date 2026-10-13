@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
@@ -479,11 +480,11 @@ class RagSearchService
                 try {
                     DB::connection($conn)->unprepared("SET LOCAL statement_timeout = '4000'");
                     $found = DB::connection($conn)->select(
-                        "SELECT DISTINCT product_id
+                        'SELECT DISTINCT product_id
                          FROM rag_chunks
                          WHERE embedding IS NOT NULL
                            AND content_he ILIKE ?
-                         LIMIT 30",
+                         LIMIT 30',
                         ['%'.$this->escapeLike($term).'%']
                     );
                     foreach ($found as $row) {
@@ -512,7 +513,7 @@ class RagSearchService
 
     /**
      * @param  list<int>  $productIds
-     * @return \Illuminate\Support\Collection<int, object>
+     * @return Collection<int, object>
      */
     private function loadCandidateChunks(string $conn, array $productIds, ?string $modelFilter)
     {
@@ -566,6 +567,288 @@ class RagSearchService
     }
 
     /**
+     * Find products that contain itinerary ROUTE LINES for plan locations
+     * (sense: "on date X we go to places Y"), not bare TOC/title mentions.
+     *
+     * @param  list<string>  $locations
+     * @return list<array{product_id: int, model: string|null, title: string|null, score: float, matched: list<string>, route_lines: list<string>, route_line_count: int}>
+     */
+    public function findProductsByLocationMentions(array $locations, ?int $maxProducts = null): array
+    {
+        if ($maxProducts !== null) {
+            $maxProducts = max(1, $maxProducts);
+        }
+        $status = $this->ragDb->connectionStatus();
+        if (! ($status['ok'] ?? false) || ! ($status['schema_ready'] ?? false)) {
+            throw new RuntimeException('PostgreSQL RAG not ready: '.($status['message'] ?? ''));
+        }
+
+        /** @var array<string, string> $termToLabel */
+        $termToLabel = [];
+        foreach ($locations as $loc) {
+            $loc = trim((string) $loc);
+            if ($loc === '' || preg_match('/аэропорт|только\s+прил|только\s+вылет/iu', $loc) === 1) {
+                continue;
+            }
+            foreach ($this->primaryLocationTerms($loc) as $term) {
+                if (mb_strlen($term) >= 3) {
+                    $termToLabel[$term] = $loc;
+                }
+            }
+        }
+        if ($termToLabel === []) {
+            return [];
+        }
+
+        $conn = RagDatabaseService::CONNECTION;
+        $terms = array_keys($termToLabel);
+        /**
+         * @var array<int, array{
+         *   product_id: int,
+         *   model: string|null,
+         *   title: string|null,
+         *   score: float,
+         *   matched: array<string, true>,
+         *   route_lines: array<string, string>
+         * }> $byProduct
+         */
+        $byProduct = [];
+
+        try {
+            DB::connection($conn)->unprepared("SET LOCAL statement_timeout = '120000'");
+
+            $q = DB::connection($conn)->table('rag_chunks as c')
+                ->leftJoin('rag_documents as d', 'd.id', '=', 'c.document_id')
+                ->select(['c.product_id', 'c.model', 'd.title', 'c.content_he'])
+                ->whereRaw('char_length(c.content_he) >= 20')
+                ->where('c.content_he', 'not ilike', '%#_Toc%')
+                ->where(function ($w) use ($terms) {
+                    foreach ($terms as $term) {
+                        $w->orWhere('c.content_he', 'ilike', '%'.$this->escapeLike($term).'%');
+                    }
+                });
+
+            foreach ($q->orderBy('c.product_id')->cursor() as $row) {
+                $pid = (int) ($row->product_id ?? 0);
+                if ($pid <= 0) {
+                    continue;
+                }
+                $content = (string) ($row->content_he ?? '');
+                if ($content === '') {
+                    continue;
+                }
+                $extracted = $this->extractRouteLinesWithLocations($content, $termToLabel);
+                if ($extracted['lines'] === []) {
+                    continue;
+                }
+                if (! isset($byProduct[$pid])) {
+                    $byProduct[$pid] = [
+                        'product_id' => $pid,
+                        'model' => $row->model !== null ? (string) $row->model : null,
+                        'title' => $row->title !== null ? (string) $row->title : null,
+                        'score' => 0.0,
+                        'matched' => [],
+                        'route_lines' => [],
+                    ];
+                }
+                foreach ($extracted['labels'] as $label) {
+                    $byProduct[$pid]['matched'][$label] = true;
+                }
+                foreach ($extracted['lines'] as $line) {
+                    if (count($byProduct[$pid]['route_lines']) >= 12) {
+                        break;
+                    }
+                    $key = mb_strtolower(mb_substr($line, 0, 160));
+                    if (! isset($byProduct[$pid]['route_lines'][$key])) {
+                        $byProduct[$pid]['route_lines'][$key] = $line;
+                        $byProduct[$pid]['score'] += 1.0;
+                    }
+                }
+                if ($byProduct[$pid]['title'] === null && $row->title !== null) {
+                    $byProduct[$pid]['title'] = (string) $row->title;
+                }
+                if ($byProduct[$pid]['model'] === null && $row->model !== null) {
+                    $byProduct[$pid]['model'] = (string) $row->model;
+                }
+            }
+        } catch (\Throwable $e) {
+            throw new RuntimeException('Route-line location scan failed: '.$e->getMessage(), 0, $e);
+        } finally {
+            try {
+                DB::connection($conn)->unprepared('SET LOCAL statement_timeout = 0');
+            } catch (\Throwable) {
+            }
+        }
+
+        $out = [];
+        foreach ($byProduct as $row) {
+            $lines = array_values($row['route_lines']);
+            $out[] = [
+                'product_id' => $row['product_id'],
+                'model' => $row['model'],
+                'title' => $row['title'],
+                'score' => round((float) $row['score'] + count($row['matched']) * 0.5, 4),
+                'matched' => array_keys($row['matched']),
+                'route_lines' => array_slice($lines, 0, 12),
+                'route_line_count' => count($lines),
+            ];
+        }
+        usort($out, function (array $a, array $b) {
+            $ca = (int) ($a['route_line_count'] ?? 0);
+            $cb = (int) ($b['route_line_count'] ?? 0);
+            if ($ca !== $cb) {
+                return $cb <=> $ca;
+            }
+            $ma = count($a['matched']);
+            $mb = count($b['matched']);
+            if ($ma !== $mb) {
+                return $mb <=> $ma;
+            }
+
+            return $b['score'] <=> $a['score'];
+        });
+
+        return $maxProducts === null ? $out : array_slice($out, 0, $maxProducts);
+    }
+
+    /**
+     * Pull itinerary-like lines that mention plan locations.
+     * Sense: "on date/day X → places Y" (flexible separators), not bare name drops.
+     *
+     * @param  array<string, string>  $termToLabel
+     * @return array{lines: list<string>, labels: list<string>}
+     */
+    private function extractRouteLinesWithLocations(string $content, array $termToLabel): array
+    {
+        $lines = preg_split('/\R/u', $content) ?: [];
+        $kept = [];
+        $labels = [];
+        foreach ($lines as $raw) {
+            $line = trim((string) $raw);
+            if ($line === '' || mb_strlen($line) < 8 || mb_strlen($line) > 400) {
+                continue;
+            }
+            if (! $this->looksLikeItineraryRouteLine($line)) {
+                continue;
+            }
+            $hay = mb_strtolower($line);
+            $lineLabels = $this->labelsMatchedInHaystack($hay, $termToLabel);
+            if ($lineLabels === []) {
+                continue;
+            }
+            foreach ($lineLabels as $label) {
+                $labels[$label] = true;
+            }
+            $kept[] = $line;
+            if (count($kept) >= 20) {
+                break;
+            }
+        }
+
+        return [
+            'lines' => $kept,
+            'labels' => array_keys($labels),
+        ];
+    }
+
+    /**
+     * Structural "when → where" line (RU/HE/EN date styles, not TOC junk).
+     */
+    private function looksLikeItineraryRouteLine(string $line): bool
+    {
+        if (str_contains($line, '#_Toc')) {
+            return false;
+        }
+        // Skip pure TOC / page numbers
+        if (preg_match('/^\d{1,3}\s*$/u', $line) === 1) {
+            return false;
+        }
+
+        $heWeek = 'ראשון|שני|שלישי|רביעי|חמישי|שישי|שבת';
+        $months = 'январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр'
+            .'|january|february|march|april|may|june|july|august|september|october|november|december';
+
+        // Date / day prefix then places (14.8 — … / 14,8 – … / 14/08: … / יום …)
+        if (preg_match(
+            '/^(?:'
+            .'(?:\d{1,2}\s*[.\/,]\s*\d{1,2}(?:\s*[.\/,]\s*\d{2,4})?)'
+            .'|(?:\d{1,2}\s+(?:'.$months.')\w*)'
+            .'|(?:יום\s+(?:'.$heWeek.'|\d{1,2}))'
+            .'|(?:day\s+\d{1,2})'
+            .'|(?:день\s+\d{1,2})'
+            .')\b/iu',
+            $line
+        ) === 1) {
+            // Need some place-like tail after separator or space
+            return preg_match('/[-–—:·|]\s*\p{L}.+/u', $line) === 1
+                || preg_match('/\d{1,2}\s*[.\/,]\s*\d{1,2}\s+\p{L}.+/u', $line) === 1
+                || preg_match('/יום\s+\S+.+\p{L}{3,}/u', $line) === 1;
+        }
+
+        // Explicit transfer day between regions
+        if (preg_match('/^(?:переезжа|переезд|трансфер|עוברים|מעבר)\b/iu', $line) === 1
+            && preg_match('/\p{L}{3,}/u', $line) === 1) {
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function primaryLocationTerms(string $label): array
+    {
+        $low = mb_strtolower($label);
+        $map = [
+            'garda' => ['garda', 'גארדה'],
+            'гарда' => ['garda', 'גארדה'],
+            'рива' => ['riva', 'ריווה'],
+            'лимоне' => ['limone', 'לימונה'],
+            'тенно' => ['tenno'],
+            'вароне' => ['varone'],
+            'мольвено' => ['molveno'],
+            'тремозине' => ['tremosine'],
+            'комо' => ['como', 'קומו'],
+            'варенна' => ['varenna'],
+            'белладжо' => ['bellagio'],
+            'лекко' => ['lecco'],
+            'менаджио' => ['menaggio'],
+            'доломит' => ['dolomiti', 'dolomites', 'דולומיטים'],
+            'трентин' => ['trentino'],
+            'ортизеи' => ['ortisei'],
+            'товель' => ['tovel'],
+            'нардис' => ['nardis'],
+        ];
+        $terms = [];
+        foreach ($map as $needle => $extra) {
+            if (mb_strpos($low, $needle) !== false) {
+                foreach ($extra as $t) {
+                    $terms[$t] = true;
+                }
+            }
+        }
+
+        return array_keys($terms);
+    }
+
+    /**
+     * @param  array<string, string>  $termToLabel
+     * @return list<string>
+     */
+    private function labelsMatchedInHaystack(string $hay, array $termToLabel): array
+    {
+        $labels = [];
+        foreach ($termToLabel as $term => $label) {
+            if (mb_strpos($hay, mb_strtolower($term)) !== false) {
+                $labels[$label] = true;
+            }
+        }
+
+        return array_keys($labels);
+    }
+
+    /**
      * Expand RU/EN place names to Hebrew tokens present in DOCX corpus.
      *
      * @return list<string>
@@ -576,6 +859,15 @@ class RagSearchService
         $synonyms = [
             'гарда' => ['גארדה', 'garda'],
             'garda' => ['גארדה', 'garda'],
+            'лимоне' => ['limone', 'לימונה'],
+            'мольвено' => ['molveno'],
+            'тенно' => ['tenno'],
+            'вароне' => ['varone'],
+            'тремозине' => ['tremosine'],
+            'варенна' => ['varenna'],
+            'белладжо' => ['bellagio'],
+            'лекко' => ['lecco'],
+            'менаджио' => ['menaggio'],
             'венеция' => ['ונציה', 'venice'],
             'venice' => ['ונציה', 'venice'],
             'венето' => ['ונטו', 'veneto'],

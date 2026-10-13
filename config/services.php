@@ -47,4 +47,28 @@ return [
         'pro_key' => env('GEMINI_PRO_API_KEY'),
     ],
 
+    /*
+    | Structured itinerary: vector finds product_id → full meta → formatter model.
+    | Swap ITINERARY_FORMATTER / ITINERARY_FORMATTER_MODEL for a fine-tuned model later.
+    */
+    'itinerary' => [
+        'formatter' => env('ITINERARY_FORMATTER', 'gemini'),
+        'formatter_model' => env('ITINERARY_FORMATTER_MODEL', env('GEMINI_MODEL', 'gemini-3.6-flash')),
+    ],
+
+    /*
+    | Nominatim (OpenStreetMap) geocoding for itinerary day cards.
+    | Cache results in place_coordinates. Respect ~1 req/sec.
+    */
+    'nominatim' => [
+        'enabled' => (bool) env('NOMINATIM_ENABLED', true),
+        'base_url' => env('NOMINATIM_BASE_URL', 'https://nominatim.openstreetmap.org'),
+        'user_agent' => env('NOMINATIM_USER_AGENT', 'travel.loc-itinerary/1.0 (admin full-tour)'),
+        'email' => env('NOMINATIM_EMAIL', ''),
+        'country_codes' => env('NOMINATIM_COUNTRY_CODES', 'it,ch,at'),
+        'rate_limit_ms' => (int) env('NOMINATIM_RATE_LIMIT_MS', 1100),
+        'max_day_span_km' => (float) env('NOMINATIM_MAX_DAY_SPAN_KM', 70),
+        'max_day_jump_km' => (float) env('NOMINATIM_MAX_DAY_JUMP_KM', 120),
+    ],
+
 ];

@@ -215,6 +215,11 @@
                 <div>Vector RAG</div>
               </a>
             </li>
+            <li class="menu-item {{ request()->routeIs('admin.test.full-tour') ? 'active' : '' }}">
+              <a href="{{ route('admin.test.full-tour') }}" class="menu-link">
+                <div>Полный тур</div>
+              </a>
+            </li>
           </ul>
         </li>
         @if(auth()->user()?->isAdmin())

@@ -38,8 +38,18 @@ Route::prefix('admin')
 
         Route::get('test', [TestController::class, 'index'])->name('test.index');
         Route::get('test/rag-vector', [TestController::class, 'ragVector'])->name('test.rag-vector');
+        Route::get('test/full-tour', [TestController::class, 'fullTour'])->name('test.full-tour');
         Route::post('test/agent', [TestController::class, 'agent'])->name('test.agent');
         Route::get('test/agent/{runId}', [TestController::class, 'agentStatus'])->name('test.agent.status');
+        Route::post('test/full-tour/plan', [TestController::class, 'fullTourPlan'])->name('test.full-tour.plan');
+        Route::post('test/full-tour/{runId}/refine-plan', [TestController::class, 'fullTourRefinePlan'])->name('test.full-tour.refine-plan');
+        Route::post('test/full-tour', [TestController::class, 'fullTourStart'])->name('test.full-tour.start');
+        Route::post('test/full-tour/{runId}/translate', [TestController::class, 'fullTourTranslate'])->name('test.full-tour.translate');
+        Route::post('test/full-tour/{runId}/curate', [TestController::class, 'fullTourCurate'])->name('test.full-tour.curate');
+        Route::post('test/full-tour/{runId}/clean', [TestController::class, 'fullTourCleanPool'])->name('test.full-tour.clean');
+        Route::post('test/full-tour/{runId}/translate-pool', [TestController::class, 'fullTourTranslatePool'])->name('test.full-tour.translate-pool');
+        Route::post('test/full-tour/{runId}/assemble', [TestController::class, 'fullTourAssemble'])->name('test.full-tour.assemble');
+        Route::get('test/full-tour/{runId}', [TestController::class, 'fullTourStatus'])->name('test.full-tour.status');
         Route::post('test/search', [TestController::class, 'search'])->name('test.search');
         Route::post('test/chat', [TestController::class, 'chat'])->name('test.chat');
         Route::post('test/prompt', [TestController::class, 'savePrompt'])->name('test.prompt.save');

@@ -13,6 +13,9 @@
   <li class="nav-item">
     <a class="nav-link active" href="{{ route('admin.test.rag-vector') }}">Vector RAG</a>
   </li>
+  <li class="nav-item">
+    <a class="nav-link" href="{{ route('admin.test.full-tour') }}">Полный тур</a>
+  </li>
 </ul>
 
 <div class="alert alert-secondary mb-4">
