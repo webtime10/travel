@@ -54,12 +54,28 @@ return [
     'itinerary' => [
         'formatter' => env('ITINERARY_FORMATTER', 'gemini'),
         'formatter_model' => env('ITINERARY_FORMATTER_MODEL', env('GEMINI_MODEL', 'gemini-3.6-flash')),
+        'catalog_batch_size' => (int) env('ITINERARY_CATALOG_BATCH_SIZE', 12),
+        'catalog_retries' => (int) env('ITINERARY_CATALOG_RETRIES', 3),
     ],
 
     /*
     | Nominatim (OpenStreetMap) geocoding for itinerary day cards.
     | Cache results in place_coordinates. Respect ~1 req/sec.
     */
+    /*
+    | Vertex AI supervised fine-tuning (GCS + tuningJobs).
+    | Credentials: storage/app/json/google-credentials.json (service account).
+    */
+    'vertex' => [
+        'project_id' => env('VERTEX_PROJECT_ID', 'project-3a79b2fb-7d69-4475-9cf'),
+        'location' => env('VERTEX_LOCATION', 'us-central1'),
+        'gcs_bucket' => env('VERTEX_GCS_BUCKET', 'travel-dataset-storage'),
+        'credentials' => env('GOOGLE_APPLICATION_CREDENTIALS', storage_path('app/json/google-credentials.json')),
+        'base_model' => env('VERTEX_BASE_MODEL', 'gemini-1.5-flash-002'),
+        'tuned_display_name' => env('VERTEX_TUNED_DISPLAY_NAME', 'travel-route-model-v1'),
+        'epoch_count' => (int) env('VERTEX_EPOCH_COUNT', 4),
+    ],
+
     'nominatim' => [
         'enabled' => (bool) env('NOMINATIM_ENABLED', true),
         'base_url' => env('NOMINATIM_BASE_URL', 'https://nominatim.openstreetmap.org'),

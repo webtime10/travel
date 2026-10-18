@@ -12,7 +12,7 @@ class RunFullTourCleanPoolJob implements ShouldQueue
 {
     use Queueable;
 
-    public int $timeout = 900;
+    public int $timeout = 1800;
 
     public int $tries = 1;
 

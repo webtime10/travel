@@ -341,19 +341,35 @@ class CuratedDayPoolBuilder
                 continue;
             }
             $body = trim((string) ($day['body'] ?? ''));
-            if (mb_strlen($body) > 1200) {
-                $body = mb_substr($body, 0, 1200).'…';
+            // Keep catalog batches small for Gemini JSON — long bodies cause truncated non-JSON.
+            if (mb_strlen($body) > 400) {
+                $body = mb_substr($body, 0, 400).'…';
+            }
+            $summary = trim((string) ($day['summary'] ?? ''));
+            if (mb_strlen($summary) > 140) {
+                $summary = mb_substr($summary, 0, 140).'…';
             }
             $id = trim((string) ($day['id'] ?? ''));
             if ($id === '') {
                 $id = 'd'.($i + 1);
             }
+            $places = [];
+            foreach ((is_array($day['places'] ?? null) ? $day['places'] : []) as $p) {
+                $p = trim((string) $p);
+                if ($p === '') {
+                    continue;
+                }
+                $places[] = mb_strlen($p) > 60 ? mb_substr($p, 0, 60).'…' : $p;
+                if (count($places) >= 5) {
+                    break;
+                }
+            }
             $compact[] = [
                 'id' => $id,
                 'region' => $day['region'] ?? 'other',
                 'kind' => $day['kind'] ?? 'program',
-                'summary' => $day['summary'] ?? '',
-                'places' => $day['places'] ?? [],
+                'summary' => $summary,
+                'places' => $places,
                 'body' => $body,
                 'model' => $day['model'] ?? null,
                 'product_id' => $day['product_id'] ?? null,
@@ -373,14 +389,14 @@ class CuratedDayPoolBuilder
             $workIds[(string) $card['id']] = $card;
         }
 
-        $batches = count($compact) > 45
-            ? array_chunk($compact, 40)
-            : [$compact];
+        // Small batches: large Gemini JSON often truncates → "Curate returned non-JSON".
+        $batchSize = max(8, min(15, (int) config('services.itinerary.catalog_batch_size', 12)));
+        $batches = array_chunk($compact, $batchSize);
 
         $cleaned = [];
         $batchNotes = [];
-        foreach ($batches as $batch) {
-            $part = $this->catalogBatchViaGemini($batch, $planLocations);
+        foreach ($batches as $batchIndex => $batch) {
+            $part = $this->catalogBatchViaGemini($batch, $planLocations, $batchIndex + 1, count($batches));
             foreach ($part['days'] as $day) {
                 $cleaned[] = $day;
             }
@@ -457,7 +473,7 @@ class CuratedDayPoolBuilder
      * @param  list<string>  $planLocations
      * @return array{days: list<array<string, mixed>>, note: string}
      */
-    private function catalogBatchViaGemini(array $compact, array $planLocations = []): array
+    private function catalogBatchViaGemini(array $compact, array $planLocations = [], int $batchNo = 1, int $batchTotal = 1): array
     {
         $planHint = $planLocations !== []
             ? ('Локации плана (оставляй только то, что к ним относится): '.implode(', ', array_slice($planLocations, 0, 24)).'.')
@@ -472,33 +488,65 @@ class CuratedDayPoolBuilder
 - Верни ВСЕ годные уникальные варианты посещений из входа (каталог), не ужимай под N дней.
 - Убери мусор: TOC, FAQ, аренда авто, пустые дни без мест.
 - Убери почти-дубли по смыслу мест (даты из чужих туров не важны — «Limone 26/7» и «Limone 12/7» = одна карточка).
-- Перепиши summary и body нормальным русским (без иврита), кратко. Места не выдумывай.
+- Перепиши summary (до 12 слов) и body (1–2 коротких предложения) нормальным русским (без иврита). Места не выдумывай.
 - {$planHint}
 - region: garda|dolomiti|como|tuscany|rome|milan|other. kind: arrival|program|departure|transfer.
-- Ответ только JSON:
+- Ответ ТОЛЬКО один JSON-объект (без markdown):
 {"days":[{"id":"...","region":"garda","kind":"program","summary":"...","places":["..."],"body":"...","model":null,"product_id":null}],"dropped_ids":["..."],"note":"1–2 предложения по-русски"}
 PROMPT;
 
         $payload = json_encode([
+            'batch' => $batchNo.'/'.$batchTotal,
             'plan_locations' => array_values($planLocations),
             'days' => $compact,
             'instructions' => [
                 'Полный релевантный RU-каталог посещений.',
                 'НЕ собирать маршрут на target_days.',
                 'Дубли по смыслу мест — одна карточка.',
+                'body кратко: 1–2 предложения.',
             ],
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
         $model = trim((string) config('services.itinerary.formatter_model', config('services.gemini.model')));
         $timeout = max(60, (int) config('services.gemini.chat_timeout', 900));
+        $attempts = max(1, (int) config('services.itinerary.catalog_retries', 3));
+        $lastError = null;
+        $decoded = null;
 
-        $raw = $this->keys->withKey(function (string $apiKey) use ($model, $timeout, $instruction, $payload) {
-            return $this->chatJson($apiKey, $model, $instruction, (string) $payload, $timeout);
-        });
-        $decoded = $this->decodeJson($raw);
+        for ($attempt = 1; $attempt <= $attempts; $attempt++) {
+            try {
+                $raw = $this->keys->withKey(function (string $apiKey) use ($model, $timeout, $instruction, $payload) {
+                    return $this->chatJson($apiKey, $model, $instruction, (string) $payload, $timeout, 16384);
+                });
+                $decoded = $this->decodeJson($raw);
+                break;
+            } catch (RuntimeException $e) {
+                $lastError = $e;
+                Log::warning('Catalog Gemini batch failed', [
+                    'batch' => $batchNo.'/'.$batchTotal,
+                    'attempt' => $attempt,
+                    'cards' => count($compact),
+                    'message' => $e->getMessage(),
+                ]);
+                if ($attempt < $attempts) {
+                    usleep(400000 * $attempt);
+                }
+            }
+        }
+
+        if ($decoded === null) {
+            $hint = $lastError?->getMessage() ?: 'неизвестная ошибка Gemini';
+            throw new RuntimeException(
+                'Каталог RU, батч '.$batchNo.'/'.$batchTotal
+                .' ('.count($compact).' карт.): Gemini не вернул JSON. '.$hint
+            );
+        }
+
         $cleanedRaw = is_array($decoded['days'] ?? null) ? $decoded['days'] : [];
         if ($cleanedRaw === []) {
-            throw new RuntimeException('Gemini вернул пустой релевантный список');
+            throw new RuntimeException(
+                'Каталог RU, батч '.$batchNo.'/'.$batchTotal.': Gemini вернул пустой список days'
+            );
         }
 
         $byId = [];
@@ -1538,8 +1586,14 @@ PROMPT;
         return $this->senseFingerprint($day);
     }
 
-    private function chatJson(string $apiKey, string $model, string $instruction, string $material, int $timeout): string
-    {
+    private function chatJson(
+        string $apiKey,
+        string $model,
+        string $instruction,
+        string $material,
+        int $timeout,
+        int $maxOutputTokens = 8192,
+    ): string {
         $url = 'https://generativelanguage.googleapis.com/v1beta/models/'
             .rawurlencode($model)
             .':generateContent?key='.$apiKey;
@@ -1551,7 +1605,7 @@ PROMPT;
             ]],
             'generationConfig' => [
                 'temperature' => 0.1,
-                'maxOutputTokens' => 8192,
+                'maxOutputTokens' => max(2048, $maxOutputTokens),
                 'responseMimeType' => 'application/json',
             ],
         ];
@@ -1561,8 +1615,13 @@ PROMPT;
 
         $response = Http::timeout($timeout)->acceptJson()->asJson()->post($url, $payload);
         if (! $response->successful()) {
-            throw new RuntimeException('Curate Gemini HTTP '.$response->status().': '.mb_substr($response->body(), 0, 400));
+            throw new RuntimeException(
+                'Gemini HTTP '.$response->status().': '.$this->snippet($response->body(), 400)
+            );
         }
+
+        $finish = (string) ($response->json('candidates.0.finishReason') ?? '');
+        $block = (string) ($response->json('promptFeedback.blockReason') ?? '');
         $parts = $response->json('candidates.0.content.parts') ?? [];
         $chunks = [];
         if (is_array($parts)) {
@@ -1574,7 +1633,14 @@ PROMPT;
         }
         $raw = trim(implode("\n", $chunks));
         if ($raw === '') {
-            throw new RuntimeException('Empty curate response');
+            $extra = trim(($finish !== '' ? 'finish='.$finish.' ' : '').($block !== '' ? 'block='.$block : ''));
+            throw new RuntimeException('Gemini пустой ответ'.($extra !== '' ? ' ('.$extra.')' : ''));
+        }
+        if ($finish === 'MAX_TOKENS') {
+            Log::warning('Gemini catalog response truncated (MAX_TOKENS)', [
+                'model' => $model,
+                'chars' => mb_strlen($raw),
+            ]);
         }
 
         return $raw;
@@ -1596,10 +1662,26 @@ PROMPT;
                 $decoded = json_decode(substr($raw, $start, $end - $start + 1), true);
             }
         }
+        // Gemini sometimes returns a bare list of day objects.
+        if (is_array($decoded) && array_is_list($decoded)) {
+            $decoded = ['days' => $decoded];
+        }
         if (! is_array($decoded)) {
-            throw new RuntimeException('Curate returned non-JSON');
+            throw new RuntimeException(
+                'Gemini вернул не-JSON (возможно обрезан ответ). Фрагмент: '.$this->snippet($raw, 280)
+            );
         }
 
         return $decoded;
+    }
+
+    private function snippet(string $text, int $max = 280): string
+    {
+        $text = preg_replace('/\s+/u', ' ', trim($text)) ?? trim($text);
+        if (mb_strlen($text) <= $max) {
+            return $text;
+        }
+
+        return mb_substr($text, 0, $max).'…';
     }
 }

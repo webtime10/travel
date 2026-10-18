@@ -187,6 +187,12 @@
             <div>Products</div>
           </a>
         </li>
+        <li class="menu-item {{ request()->routeIs('admin.locations.*') ? 'active' : '' }}">
+          <a href="{{ route('admin.locations.index') }}" class="menu-link">
+            <i class="menu-icon tf-icons bx bx-map-pin"></i>
+            <div>Locations</div>
+          </a>
+        </li>
         <li class="menu-item {{ request()->routeIs('admin.languages.*') ? 'active' : '' }}">
           <a href="{{ route('admin.languages.index') }}" class="menu-link">
             <i class="menu-icon tf-icons bx bx-globe"></i>
