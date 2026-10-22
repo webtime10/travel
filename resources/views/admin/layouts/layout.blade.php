@@ -160,9 +160,17 @@
   <div class="layout-container">
     <aside id="layout-menu" class="layout-menu menu-vertical menu bg-menu-theme">
       <div class="app-brand demo">
-        <a href="{{ route('admin.index') }}" class="app-brand-link">
-          <span class="app-brand-text demo menu-text fw-bold ms-2">Travel</span>
-        </a>
+        <div class="d-flex flex-column ms-2">
+          <a href="{{ route('admin.index') }}" class="app-brand-link">
+            <span class="app-brand-text demo menu-text fw-bold">Travel</span>
+          </a>
+          @php $adminLangCode = \App\Models\Language::admin()?->code ?? 'he'; @endphp
+          <div class="d-flex align-items-center gap-1 small mb-1">
+            <a href="{{ route('admin.lang', 'he') }}" class="{{ $adminLangCode === 'he' ? 'fw-bold text-primary' : 'text-muted' }}">he</a>
+            <span class="text-muted">/</span>
+            <a href="{{ route('admin.lang', 'ru') }}" class="{{ $adminLangCode === 'ru' ? 'fw-bold text-primary' : 'text-muted' }}">ru</a>
+          </div>
+        </div>
         <a href="javascript:void(0);" class="layout-menu-toggle menu-link text-large ms-auto">
           <i class="bx bx-chevron-left d-block d-xl-none align-middle"></i>
         </a>
@@ -193,6 +201,30 @@
             <div>Locations</div>
           </a>
         </li>
+        <li class="menu-item {{ request()->routeIs('admin.areas.*') ? 'active' : '' }}">
+          <a href="{{ route('admin.areas.index') }}" class="menu-link">
+            <i class="menu-icon tf-icons bx bx-map-alt"></i>
+            <div>Areas</div>
+          </a>
+        </li>
+        <li class="menu-item {{ request()->routeIs('admin.route-skeletons.*') ? 'active' : '' }}">
+          <a href="{{ route('admin.route-skeletons.index') }}" class="menu-link">
+            <i class="menu-icon tf-icons bx bx-route"></i>
+            <div>Short routes</div>
+          </a>
+        </li>
+        <li class="menu-item {{ request()->routeIs('admin.manufacturers.*') ? 'active' : '' }}">
+          <a href="{{ route('admin.manufacturers.index') }}" class="menu-link">
+            <i class="menu-icon tf-icons bx bx-flag"></i>
+            <div>Manufacturers</div>
+          </a>
+        </li>
+        <li class="menu-item {{ request()->routeIs('admin.attribute-groups.*') || request()->routeIs('admin.attributes.*') ? 'active' : '' }}">
+          <a href="{{ route('admin.attributes.index') }}" class="menu-link">
+            <i class="menu-icon tf-icons bx bx-list-check"></i>
+            <div>Attributes</div>
+          </a>
+        </li>
         <li class="menu-item {{ request()->routeIs('admin.languages.*') ? 'active' : '' }}">
           <a href="{{ route('admin.languages.index') }}" class="menu-link">
             <i class="menu-icon tf-icons bx bx-globe"></i>
@@ -207,23 +239,28 @@
         </li>
         <li class="menu-item {{ request()->routeIs('admin.test.*') ? 'active open' : '' }}">
           <a href="javascript:void(0);" class="menu-link menu-toggle">
-            <i class="menu-icon tf-icons bx bx-message-rounded-dots"></i>
+            <i class="menu-icon tf-icons bx bx-flask"></i>
             <div>Test</div>
           </a>
           <ul class="menu-sub">
             <li class="menu-item {{ request()->routeIs('admin.test.index') ? 'active' : '' }}">
               <a href="{{ route('admin.test.index') }}" class="menu-link">
-                <div>Агентный RAG</div>
+                <div>Обзор</div>
               </a>
             </li>
-            <li class="menu-item {{ request()->routeIs('admin.test.rag-vector') ? 'active' : '' }}">
-              <a href="{{ route('admin.test.rag-vector') }}" class="menu-link">
-                <div>Vector RAG</div>
+            <li class="menu-item {{ request()->routeIs('admin.test.locations*') ? 'active' : '' }}">
+              <a href="{{ route('admin.test.locations') }}" class="menu-link">
+                <div>Поиск мест</div>
               </a>
             </li>
-            <li class="menu-item {{ request()->routeIs('admin.test.full-tour') ? 'active' : '' }}">
-              <a href="{{ route('admin.test.full-tour') }}" class="menu-link">
-                <div>Полный тур</div>
+            <li class="menu-item {{ request()->routeIs('admin.test.scenario*') ? 'active' : '' }}">
+              <a href="{{ route('admin.test.scenario') }}" class="menu-link">
+                <div>Gemini сценарий</div>
+              </a>
+            </li>
+            <li class="menu-item {{ request()->routeIs('admin.test.chain*') ? 'active' : '' }}">
+              <a href="{{ route('admin.test.chain') }}" class="menu-link">
+                <div>Тест 3</div>
               </a>
             </li>
           </ul>

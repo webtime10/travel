@@ -19,6 +19,7 @@ class GeminiChatService
         array $history = [],
         ?string $systemPrompt = null,
         ?string $ragContext = null,
+        bool $strictCatalog = false,
     ): string {
         $userMessage = trim($userMessage);
         if ($userMessage === '') {
@@ -27,7 +28,7 @@ class GeminiChatService
 
         $model = trim((string) config('services.gemini.model', 'gemini-3.6-flash'));
         $timeout = max(30, (int) config('services.gemini.chat_timeout', 900));
-        $systemPrompt = $this->composeSystemPrompt($systemPrompt, $ragContext);
+        $systemPrompt = $this->composeSystemPrompt($systemPrompt, $ragContext, $strictCatalog);
 
         $contents = [];
         foreach ($history as $turn) {
@@ -101,10 +102,19 @@ class GeminiChatService
         });
     }
 
-    private function composeSystemPrompt(?string $systemPrompt, ?string $ragContext): string
+    private function composeSystemPrompt(?string $systemPrompt, ?string $ragContext, bool $strictCatalog = false): string
     {
         $systemPrompt = trim((string) $systemPrompt);
         $ragContext = trim((string) $ragContext);
+
+        if ($strictCatalog) {
+            $out = $systemPrompt !== '' ? $systemPrompt : 'Отвечай только по списку мест из CONTEXT.';
+            if ($ragContext !== '') {
+                $out .= "\n\nCONTEXT (только эти места):\n".$ragContext;
+            }
+
+            return $out;
+        }
 
         $ragRules = $ragContext !== ''
             ? "ГИБРИДНЫЙ РЕЖИМ (ответ любой ценой — цельный полезный ответ обязателен):\n"

@@ -9,7 +9,7 @@ class RagMigrateCommand extends Command
 {
     protected $signature = 'travel:rag-migrate';
 
-    protected $description = 'Create PostgreSQL RAG schema (Hebrew documents/chunks)';
+    protected $description = 'Create/upgrade PostgreSQL RAG schema (location_id, wipe old product tours once)';
 
     public function handle(RagDatabaseService $rag): int
     {

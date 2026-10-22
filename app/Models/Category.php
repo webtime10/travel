@@ -60,14 +60,12 @@ class Category extends Model
 
     public static function treeForParentSelect(?Language $lang = null, array $excludeIds = []): Collection
     {
-        $lang = $lang ?? Language::getDefault();
+        $lang = $lang ?? Language::admin();
         if (! $lang) {
             return collect();
         }
 
-        $all = static::with(['descriptions' => fn ($q) => $q->where('language_id', $lang->id)])
-            ->orderBy('sort_order')
-            ->get();
+        $all = static::with('descriptions')->orderBy('sort_order')->get();
 
         $rows = collect();
 
@@ -84,7 +82,8 @@ class Category extends Model
                 if (in_array((int) $cat->id, array_map('intval', $excludeIds), true)) {
                     continue;
                 }
-                $d = $cat->descriptions->firstWhere('language_id', $lang->id);
+                $d = $cat->descriptions->firstWhere('language_id', $lang->id)
+                    ?? $cat->descriptions->first();
                 $label = str_repeat('— ', $depth).($d->name ?? ('#'.$cat->id));
                 $rows->push(['id' => $cat->id, 'label' => $label]);
                 $walk($cat->id, $depth + 1);

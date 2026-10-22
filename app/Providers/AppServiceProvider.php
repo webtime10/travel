@@ -2,9 +2,7 @@
 
 namespace App\Providers;
 
-use App\Contracts\ItineraryFormatter;
 use App\Queue\WorkCommand as AppWorkCommand;
-use App\Services\Itinerary\GeminiItineraryFormatter;
 use Illuminate\Pagination\Paginator;
 use Illuminate\Queue\Console\WorkCommand as LaravelWorkCommand;
 use Illuminate\Support\Facades\URL;
@@ -17,9 +15,6 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        // Concrete binding so queue workers can resolve BuildItineraryService.
-        $this->app->singleton(ItineraryFormatter::class, GeminiItineraryFormatter::class);
-
         // ArtisanServiceProvider binds queue:work late (deferred). Re-bind just before resolve.
         $this->app->beforeResolving(LaravelWorkCommand::class, function () {
             static $bound = false;

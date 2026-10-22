@@ -59,7 +59,8 @@ class RagDatabaseService
                 'pgvector' => $pgvector,
                 'tables' => $tables,
                 'schema_ready' => in_array('rag_documents', $tables, true)
-                    && in_array('rag_chunks', $tables, true),
+                    && in_array('rag_chunks', $tables, true)
+                    && $this->hasLocationColumns(),
             ]);
         } catch (Throwable $e) {
             return array_merge($base, [
@@ -182,7 +183,7 @@ class RagDatabaseService
     }
 
     /**
-     * Create RAG tables (Hebrew chunks). embedding as JSONB until pgvector is installed.
+     * Create RAG tables. v2: location_id is the catalog key; old product tour rows are wiped once.
      */
     public function migrateSchema(): array
     {
@@ -205,7 +206,8 @@ class RagDatabaseService
         if (! $schema->hasTable('rag_documents')) {
             $schema->create('rag_documents', function ($table) {
                 $table->bigIncrements('id');
-                $table->unsignedBigInteger('product_id')->unique();
+                $table->unsignedBigInteger('location_id')->nullable()->unique();
+                $table->unsignedBigInteger('product_id')->nullable()->index();
                 $table->string('model', 64)->nullable()->index();
                 $table->string('source_file', 512)->nullable();
                 $table->string('language', 8)->default('he');
@@ -220,7 +222,8 @@ class RagDatabaseService
             $schema->create('rag_chunks', function ($table) {
                 $table->bigIncrements('id');
                 $table->unsignedBigInteger('document_id')->index();
-                $table->unsignedBigInteger('product_id')->index();
+                $table->unsignedBigInteger('location_id')->nullable()->index();
+                $table->unsignedBigInteger('product_id')->nullable()->index();
                 $table->string('model', 64)->nullable()->index();
                 $table->integer('chunk_index');
                 $table->integer('block_index')->nullable();
@@ -250,9 +253,11 @@ class RagDatabaseService
             });
         }
 
+        $wiped = $this->upgradeToLocationSchema();
+
         DB::connection(self::CONNECTION)->table('rag_meta')->updateOrInsert(
             ['key' => 'schema_version'],
-            ['value' => '1', 'updated_at' => now(), 'created_at' => now()]
+            ['value' => '2', 'updated_at' => now(), 'created_at' => now()]
         );
         DB::connection(self::CONNECTION)->table('rag_meta')->updateOrInsert(
             ['key' => 'pgvector'],
@@ -263,14 +268,147 @@ class RagDatabaseService
             ['value' => 'he', 'updated_at' => now(), 'created_at' => now()]
         );
 
+        $message = $pgvector
+            ? 'RAG schema ready (pgvector available)'
+            : 'RAG schema ready (embedding stored as JSONB — install pgvector later for ANN search)';
+        if ($wiped > 0) {
+            $message .= '. Wiped '.$wiped.' old product tour documents';
+        }
+
         return [
             'ok' => true,
             'pgvector' => $pgvector,
-            'message' => $pgvector
-                ? 'RAG schema ready (pgvector available)'
-                : 'RAG schema ready (embedding stored as JSONB — install pgvector later for ANN search)',
+            'wiped' => $wiped,
+            'message' => $message,
             'tables' => $this->listTables(),
         ];
+    }
+
+    /**
+     * Add location_id, loosen product_id, wipe leftover tour embeddings once.
+     */
+    public function upgradeToLocationSchema(): int
+    {
+        $schema = DB::connection(self::CONNECTION)->getSchemaBuilder();
+        if (! $schema->hasTable('rag_documents') || ! $schema->hasTable('rag_chunks')) {
+            return 0;
+        }
+
+        if (! $schema->hasColumn('rag_documents', 'location_id')) {
+            $schema->table('rag_documents', function ($table) {
+                $table->unsignedBigInteger('location_id')->nullable();
+            });
+        }
+        if (! $schema->hasColumn('rag_chunks', 'location_id')) {
+            $schema->table('rag_chunks', function ($table) {
+                $table->unsignedBigInteger('location_id')->nullable()->index();
+            });
+        }
+
+        $this->dropUniqueIfExists('rag_documents', 'rag_documents_product_id_unique');
+        $this->dropUniqueIfExists('rag_documents', 'rag_documents_product_id_key');
+
+        try {
+            DB::connection(self::CONNECTION)->statement('ALTER TABLE rag_documents ALTER COLUMN product_id DROP NOT NULL');
+        } catch (Throwable) {
+        }
+        try {
+            DB::connection(self::CONNECTION)->statement('ALTER TABLE rag_chunks ALTER COLUMN product_id DROP NOT NULL');
+        } catch (Throwable) {
+        }
+
+        try {
+            DB::connection(self::CONNECTION)->statement(
+                'CREATE UNIQUE INDEX IF NOT EXISTS rag_documents_location_id_unique ON rag_documents (location_id)'
+            );
+        } catch (Throwable) {
+        }
+
+        $old = (int) DB::connection(self::CONNECTION)->table('rag_documents')
+            ->whereNotNull('product_id')
+            ->whereNull('location_id')
+            ->count();
+        if ($old > 0) {
+            $this->wipeDocuments();
+
+            return $old;
+        }
+
+        return 0;
+    }
+
+    /**
+     * Drop document/chunk rows. Leaves rag_meta.
+     */
+    public function wipeDocuments(): void
+    {
+        try {
+            DB::connection(self::CONNECTION)->statement('TRUNCATE TABLE rag_chunks, rag_documents RESTART IDENTITY CASCADE');
+        } catch (Throwable) {
+            DB::connection(self::CONNECTION)->table('rag_chunks')->delete();
+            DB::connection(self::CONNECTION)->table('rag_documents')->delete();
+        }
+    }
+
+    /**
+     * @param  list<int>  $locationIds
+     * @return list<int>
+     */
+    public function indexedLocationIds(array $locationIds): array
+    {
+        $locationIds = array_values(array_filter(array_map('intval', $locationIds)));
+        if ($locationIds === [] || ! $this->hasLocationColumns()) {
+            return [];
+        }
+
+        return DB::connection(self::CONNECTION)
+            ->table('rag_documents')
+            ->whereIn('location_id', $locationIds)
+            ->where('chunk_count', '>', 0)
+            ->whereNotNull('indexed_at')
+            ->pluck('location_id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+    }
+
+    public function indexedLocationCount(): int
+    {
+        if (! $this->hasLocationColumns()) {
+            return 0;
+        }
+
+        return (int) DB::connection(self::CONNECTION)
+            ->table('rag_documents')
+            ->whereNotNull('location_id')
+            ->where('chunk_count', '>', 0)
+            ->whereNotNull('indexed_at')
+            ->count();
+    }
+
+    public function hasLocationColumns(): bool
+    {
+        try {
+            $schema = DB::connection(self::CONNECTION)->getSchemaBuilder();
+
+            return $schema->hasTable('rag_documents')
+                && $schema->hasColumn('rag_documents', 'location_id');
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    private function dropUniqueIfExists(string $table, string $index): void
+    {
+        try {
+            DB::connection(self::CONNECTION)->statement(
+                'ALTER TABLE '.$this->quoteIdent($table).' DROP CONSTRAINT IF EXISTS '.$this->quoteIdent($index)
+            );
+        } catch (Throwable) {
+        }
+        try {
+            DB::connection(self::CONNECTION)->statement('DROP INDEX IF EXISTS '.$this->quoteIdent($index));
+        } catch (Throwable) {
+        }
     }
 
     /**

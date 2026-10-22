@@ -3,16 +3,26 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Models\Attribute;
+use App\Models\Area;
+use App\Models\AttributeGroup;
 use App\Models\Category;
 use App\Models\Language;
 use App\Models\Location;
+use App\Models\LocationAttribute;
 use App\Models\LocationDescription;
+use App\Models\Manufacturer;
 use App\Models\LocationFact;
 use App\Models\LocationFactDescription;
+use App\Jobs\IndexLocationJob;
 use App\Jobs\SplitLocationFactsJob;
 use App\Services\LocationFactChecker;
 use App\Services\LocationFactExtractor;
 use App\Services\LocationFactsPipelineStore;
+use App\Services\LocationFactRuTranslator;
+use App\Services\LocationVectorPipelineStore;
+use App\Services\RagDatabaseService;
+use App\Services\RagLocationIndexer;
 use App\Services\LocationRuTranslator;
 use Illuminate\Http\Request;
 use Illuminate\Support\Collection;
@@ -24,13 +34,20 @@ class LocationController extends Controller
     public function index(Request $request)
     {
         $pageTitle = 'Locations';
-        $defaultLanguage = Language::getDefault();
+        $defaultLanguage = Language::admin();
         $search = trim((string) $request->input('q', ''));
         $factsStatus = (string) $request->input('facts', '');
+        $manufacturerId = (int) $request->input('manufacturer_id', 0);
+        $categoryId = (int) $request->input('category_id', 0);
+        $attributeId = (int) $request->input('attribute_id', 0);
 
         $query = Location::query()
-            ->select(['id', 'model', 'lat', 'lng', 'sort_order', 'status', 'facts_status', 'facts_coverage', 'facts_split_at', 'created_at', 'updated_at'])
-            ->with(['descriptions' => fn ($q) => $q->where('language_id', $defaultLanguage?->id), 'categories.descriptions'])
+            ->select(['locations.id', 'locations.model', 'locations.manufacturer_id', 'locations.lat', 'locations.lng', 'locations.sort_order', 'locations.status', 'locations.facts_status', 'locations.facts_coverage', 'locations.facts_split_at', 'locations.created_at', 'locations.updated_at'])
+            ->with([
+                'descriptions',
+                'categories.descriptions',
+                'manufacturer.descriptions',
+            ])
             ->withCount('facts');
 
         if ($search !== '') {
@@ -52,28 +69,126 @@ class LocationController extends Controller
             $query->orderByRaw("FIELD(facts_status, 'error', 'bad', 'warn')")->orderBy('facts_coverage');
         }
 
+        if ($manufacturerId > 0) {
+            $query->where('manufacturer_id', $manufacturerId);
+        }
+        if ($categoryId > 0) {
+            $category = Category::find($categoryId);
+            $categoryIds = $category
+                ? array_merge([$category->id], $category->descendantIdList())
+                : [$categoryId];
+            $query->whereHas('categories', fn ($q) => $q->whereIn('categories.id', $categoryIds));
+        }
+        if ($attributeId > 0) {
+            $query->whereHas('attributeValues', fn ($q) => $q->where('attribute_id', $attributeId));
+        }
+
         $locations = $query
             ->orderBy('sort_order')
             ->orderByDesc('id')
             ->paginate(50)
             ->withQueryString();
 
+        $vectorIndexed = [];
+        $vectorIndexedCount = 0;
+        try {
+            $ragDb = app(RagDatabaseService::class);
+            $vectorIndexed = array_fill_keys(
+                $ragDb->indexedLocationIds($locations->pluck('id')->all()),
+                true
+            );
+            $vectorIndexedCount = $ragDb->indexedLocationCount();
+        } catch (\Throwable) {
+        }
+
         $statusCounts = Location::query()
             ->selectRaw("COALESCE(facts_status, IF(facts_split_at IS NULL, 'none', 'unchecked')) as s, COUNT(*) as c")
             ->groupBy('s')
             ->pluck('c', 's');
 
-        return view('admin.locations.index', compact('locations', 'pageTitle', 'defaultLanguage', 'search', 'factsStatus', 'statusCounts'));
+        $manufacturers = Manufacturer::with('descriptions')->withCount('locations')->orderBy('sort_order')->get();
+        $regionCategories = $this->regionFilterOptions($defaultLanguage, $manufacturerId);
+        $filterAttributes = Attribute::with(['descriptions', 'group.descriptions'])
+            ->orderBy('attribute_group_id')
+            ->orderBy('sort_order')
+            ->get();
+
+        return view('admin.locations.index', compact(
+            'locations',
+            'pageTitle',
+            'defaultLanguage',
+            'search',
+            'factsStatus',
+            'statusCounts',
+            'manufacturers',
+            'manufacturerId',
+            'regionCategories',
+            'categoryId',
+            'filterAttributes',
+            'attributeId',
+            'vectorIndexed',
+            'vectorIndexedCount',
+        ));
+    }
+
+    /**
+     * @return \Illuminate\Support\Collection<int, array{id: int, label: string, count: int}>
+     */
+    private function regionFilterOptions(?Language $lang, int $manufacturerId = 0): Collection
+    {
+        $parentNames = array_filter([
+            (string) config('travel_regions.region_parent.ru'),
+            (string) config('travel_regions.region_parent.he'),
+        ]);
+        $parent = Category::query()
+            ->with('descriptions')
+            ->whereHas('descriptions', fn ($q) => $q->whereIn('name', $parentNames))
+            ->first();
+        if (! $parent) {
+            return Category::treeForParentSelect($lang);
+        }
+
+        $children = $parent->children()
+            ->with('descriptions')
+            ->withCount(['locations' => function ($q) use ($manufacturerId) {
+                if ($manufacturerId > 0) {
+                    $q->where('locations.manufacturer_id', $manufacturerId);
+                }
+            }])
+            ->orderBy('sort_order')
+            ->get();
+
+        $rows = collect();
+        $rows->push([
+            'id' => $parent->id,
+            'label' => $parent->descriptions->firstWhere('language_id', $lang?->id)?->name ?? 'Области',
+            'count' => $children->sum('locations_count'),
+        ]);
+        foreach ($children as $child) {
+            $name = $child->descriptions->firstWhere('language_id', $lang?->id)?->name
+                ?? $child->descriptions->first()?->name
+                ?? '#'.$child->id;
+            $rows->push([
+                'id' => $child->id,
+                'label' => '— '.$name,
+                'count' => $child->locations_count,
+            ]);
+        }
+
+        return $rows;
     }
 
     public function create()
     {
         $pageTitle = 'Locations';
         $languages = Language::forAdminForms();
-        $defaultLanguage = Language::getDefault();
+        $defaultLanguage = Language::admin();
         $categories = Category::treeForParentSelect($defaultLanguage);
+        $manufacturers = Manufacturer::with('descriptions')->orderBy('sort_order')->get();
+        $areas = Area::with('descriptions')->where('status', true)->orderBy('sort_order')->orderBy('id')->get();
+        $attributeGroups = AttributeGroup::with(['descriptions', 'attributes.descriptions'])->orderBy('sort_order')->get();
 
-        return view('admin.locations.create', compact('pageTitle', 'languages', 'defaultLanguage', 'categories'));
+        return view('admin.locations.create', compact('pageTitle', 'languages', 'defaultLanguage', 'categories', 'manufacturers', 'areas', 'attributeGroups'));
     }
 
     public function store(Request $request)
@@ -89,6 +204,7 @@ class LocationController extends Controller
             $location = Location::create($this->baseAttributes($request));
             $location->categories()->sync($request->input('category_ids', []));
             $this->syncDescriptions($location, $request, $languages);
+            $this->syncAttributes($location, $request, $languages);
         });
 
         return redirect()->route('admin.locations.index')->with('success', 'Локация создана');
@@ -98,11 +214,23 @@ class LocationController extends Controller
     {
         $pageTitle = 'Locations';
         $languages = Language::forAdminForms();
-        $defaultLanguage = Language::getDefault();
+        $defaultLanguage = Language::admin();
         $categories = Category::treeForParentSelect($defaultLanguage);
-        $location->load(['descriptions', 'categories', 'facts.descriptions']);
+        $manufacturers = Manufacturer::with('descriptions')->orderBy('sort_order')->get();
+        $areas = Area::with('descriptions')->orderBy('sort_order')->orderBy('id')->get();
+        $attributeGroups = AttributeGroup::with(['descriptions', 'attributes.descriptions'])->orderBy('sort_order')->get();
+        $location->load(['descriptions', 'categories', 'facts.descriptions', 'attributeValues', 'area']);
+        $vectorIndexed = false;
+        try {
+            $vectorIndexed = in_array(
+                $location->id,
+                app(RagDatabaseService::class)->indexedLocationIds([$location->id]),
+                true
+            );
+        } catch (\Throwable) {
+        }
 
-        return view('admin.locations.edit', compact('pageTitle', 'location', 'languages', 'defaultLanguage', 'categories'));
+        return view('admin.locations.edit', compact('pageTitle', 'location', 'languages', 'defaultLanguage', 'categories', 'manufacturers', 'areas', 'attributeGroups', 'vectorIndexed'));
     }
 
     public function update(Request $request, Location $location)
@@ -114,6 +242,7 @@ class LocationController extends Controller
             $location->update($this->baseAttributes($request));
             $location->categories()->sync($request->input('category_ids', []));
             $this->syncDescriptions($location, $request, $languages);
+            $this->syncAttributes($location, $request, $languages);
         });
 
         return redirect()->route('admin.locations.index')->with('success', 'Локация обновлена');
@@ -162,6 +291,19 @@ class LocationController extends Controller
         }
 
         return response()->json($payload, empty($result['warning']) ? 200 : 422);
+    }
+
+    public function translateFactsRu(Location $location, LocationFactRuTranslator $translator)
+    {
+        @set_time_limit(600);
+
+        try {
+            $result = $translator->translate($location);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'message' => $e->getMessage()], 500);
+        }
+
+        return response()->json(['ok' => true] + $result);
     }
 
     public function splitFacts(Location $location, LocationFactExtractor $extractor, LocationFactChecker $checker)
@@ -225,6 +367,88 @@ class LocationController extends Controller
         return response()->json(['ok' => true, 'message' => 'Остановлено']);
     }
 
+    public function vectorPipelineStatus(LocationVectorPipelineStore $pipeline, RagDatabaseService $ragDb)
+    {
+        $all = Location::query()->count();
+        $indexed = 0;
+        try {
+            $indexed = $ragDb->indexedLocationCount();
+        } catch (\Throwable) {
+        }
+
+        return response()->json($pipeline->status() + [
+            'location_total' => $all,
+            'indexed' => $indexed,
+            'pending' => max(0, $all - $indexed),
+        ]);
+    }
+
+    public function vectorPipelineStart(LocationVectorPipelineStore $pipeline, RagDatabaseService $ragDb)
+    {
+        if ($pipeline->running()) {
+            return response()->json(['ok' => false, 'message' => 'Вектор уже считается'], 409);
+        }
+
+        $ragStatus = $ragDb->connectionStatus();
+        if (! ($ragStatus['ok'] ?? false)) {
+            return response()->json(['ok' => false, 'message' => 'PostgreSQL RAG не подключен'], 503);
+        }
+        if (! ($ragStatus['schema_ready'] ?? false)) {
+            $ragDb->migrateSchema();
+        }
+
+        $ids = $this->pendingVectorLocationIds($ragDb);
+        if ($ids === []) {
+            return response()->json(['ok' => true, 'started' => 0, 'message' => 'Все локации уже в векторе']);
+        }
+
+        $pipeline->begin($ids);
+        $first = $pipeline->shift();
+        if ($first !== null) {
+            IndexLocationJob::dispatch($first);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'started' => count($ids),
+            'message' => 'Вектор запущен: '.count($ids).' локаций. Нужен queue:work-forever',
+        ]);
+    }
+
+    public function vectorPipelineCancel(LocationVectorPipelineStore $pipeline)
+    {
+        $pipeline->cancel();
+
+        return response()->json(['ok' => true, 'message' => 'Остановлено']);
+    }
+
+    public function indexVector(Location $location, RagLocationIndexer $indexer)
+    {
+        @set_time_limit(600);
+
+        try {
+            $result = $indexer->indexLocation($location);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'message' => $e->getMessage()], 500);
+        }
+
+        return response()->json(['ok' => true] + $result);
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function pendingVectorLocationIds(RagDatabaseService $ragDb): array
+    {
+        $ids = Location::query()->orderBy('id')->pluck('id')->map(fn ($id) => (int) $id)->all();
+        if ($ids === []) {
+            return [];
+        }
+        $indexed = array_fill_keys($ragDb->indexedLocationIds($ids), true);
+
+        return array_values(array_filter($ids, fn (int $id) => ! isset($indexed[$id])));
+    }
+
     public function factStore(Request $request, Location $location)
     {
         $data = $request->validate($this->factRules());
@@ -266,6 +490,10 @@ class LocationController extends Controller
             'name' => 'required|string|max:255',
             'text' => 'nullable|string',
             'hours' => 'nullable|string',
+            'type_ru' => 'nullable|string|max:255',
+            'name_ru' => 'nullable|string|max:255',
+            'text_ru' => 'nullable|string',
+            'hours_ru' => 'nullable|string',
             'address' => 'nullable|string|max:500',
             'map_url' => 'nullable|string',
             'waze_url' => 'nullable|string',
@@ -298,6 +526,20 @@ class LocationController extends Controller
                 'hours' => $data['hours'] ?? null,
             ]
         );
+
+        $ru = Language::where('code', 'ru')->first();
+        $ruName = trim((string) ($data['name_ru'] ?? ''));
+        if ($ru && $ruName !== '') {
+            LocationFactDescription::updateOrCreate(
+                ['location_fact_id' => $fact->id, 'language_id' => $ru->id],
+                [
+                    'type' => $data['type_ru'] ?? null,
+                    'name' => $ruName,
+                    'text' => $data['text_ru'] ?? null,
+                    'hours' => $data['hours_ru'] ?? null,
+                ]
+            );
+        }
     }
 
     private function rules(Collection $languages, $modelUniqueRule): array
@@ -310,6 +552,13 @@ class LocationController extends Controller
             'status' => 'nullable|boolean',
             'category_ids' => 'nullable|array',
             'category_ids.*' => 'exists:categories,id',
+            'manufacturer_id' => 'nullable|exists:manufacturers,id',
+            'area_id' => 'nullable|exists:areas,id',
+            'trip_role' => 'nullable|in:base,place,end',
+            'location_attributes' => 'nullable|array',
+            'location_attributes.*.attribute_id' => 'nullable|exists:attributes,id',
+            'location_attributes.*.text_he' => 'nullable|string',
+            'location_attributes.*.text_ru' => 'nullable|string',
         ];
         foreach ($languages as $language) {
             $c = $language->code;
@@ -324,8 +573,13 @@ class LocationController extends Controller
     {
         $model = trim((string) $request->input('model', ''));
 
+        $tripRole = trim((string) $request->input('trip_role', ''));
+
         return [
             'model' => $model !== '' ? $model : null,
+            'manufacturer_id' => $request->filled('manufacturer_id') ? (int) $request->input('manufacturer_id') : null,
+            'area_id' => $request->filled('area_id') ? (int) $request->input('area_id') : null,
+            'trip_role' => $tripRole !== '' ? $tripRole : null,
             'lat' => $request->filled('lat') ? (float) $request->input('lat') : null,
             'lng' => $request->filled('lng') ? (float) $request->input('lng') : null,
             'sort_order' => (int) $request->input('sort_order', 0),
@@ -354,6 +608,34 @@ class LocationController extends Controller
                     'location_id' => $location->id,
                     'language_id' => $language->id,
                 ]));
+            }
+        }
+    }
+
+    private function syncAttributes(Location $location, Request $request, Collection $languages): void
+    {
+        $he = $languages->firstWhere('code', 'he') ?? $languages->first();
+        $ru = $languages->firstWhere('code', 'ru');
+        $location->attributeValues()->delete();
+        foreach ((array) $request->input('location_attributes', []) as $row) {
+            $attributeId = (int) ($row['attribute_id'] ?? 0);
+            if ($attributeId <= 0) {
+                continue;
+            }
+            foreach ([['lang' => $he, 'key' => 'text_he'], ['lang' => $ru, 'key' => 'text_ru']] as $pack) {
+                if (! $pack['lang']) {
+                    continue;
+                }
+                $text = trim((string) ($row[$pack['key']] ?? ''));
+                if ($text === '') {
+                    continue;
+                }
+                LocationAttribute::create([
+                    'location_id' => $location->id,
+                    'attribute_id' => $attributeId,
+                    'language_id' => $pack['lang']->id,
+                    'text' => $text,
+                ]);
             }
         }
     }

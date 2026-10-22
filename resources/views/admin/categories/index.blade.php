@@ -27,13 +27,16 @@
       <tbody class="table-border-bottom-0">
         @forelse($categories as $item)
           @php
-            $heId = $heLanguage?->id;
-            $heDesc = $heId ? $item->descriptions->firstWhere('language_id', $heId) : null;
             $defId = $defaultLanguage?->id;
-            $d = $heDesc ?? ($defId ? $item->descriptions->firstWhere('language_id', $defId) : null);
-            $pd = $item->parent && $defId ? $item->parent->descriptions->firstWhere('language_id', $defId) : null;
-            if ($item->parent && $heId) {
-              $pd = $item->parent->descriptions->firstWhere('language_id', $heId) ?? $pd;
+            $heId = $heLanguage?->id;
+            $d = ($defId ? $item->descriptions->firstWhere('language_id', $defId) : null)
+              ?? ($heId ? $item->descriptions->firstWhere('language_id', $heId) : null)
+              ?? $item->descriptions->first();
+            $pd = null;
+            if ($item->parent) {
+              $pd = ($defId ? $item->parent->descriptions->firstWhere('language_id', $defId) : null)
+                ?? ($heId ? $item->parent->descriptions->firstWhere('language_id', $heId) : null)
+                ?? $item->parent->descriptions->first();
             }
           @endphp
           <tr>

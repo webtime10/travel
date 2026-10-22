@@ -53,4 +53,17 @@ class Language extends Model
             ?? static::where('is_active', true)->orderBy('sort_order')->first()
             ?? static::query()->orderBy('id')->first();
     }
+
+    /**
+     * Language for admin lists (session he/ru). Forms keep all language tabs.
+     */
+    public static function admin(): ?self
+    {
+        $code = session('admin_lang', 'he');
+        if (! in_array($code, ['he', 'ru'], true)) {
+            $code = 'he';
+        }
+
+        return static::where('code', $code)->first() ?? static::getDefault();
+    }
 }

@@ -18,7 +18,7 @@ class CategoryController extends Controller
     public function index()
     {
         $pageTitle = 'Categories';
-        $defaultLanguage = Language::getDefault();
+        $defaultLanguage = Language::admin();
         $heLanguage = Language::query()->where('code', 'he')->where('is_active', true)->first();
         $categories = Category::with(['parent.descriptions', 'descriptions'])
             ->orderBy('sort_order')

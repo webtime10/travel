@@ -91,7 +91,7 @@ class LocationFactChecker
      */
     public static function statusFor(bool $hasFacts, int $coverage, array $kinds, int $dropped, array $uncovered): string
     {
-        $uncoveredData = array_filter($uncovered, fn ($line) => (bool) preg_match('~https?://|\b\d{1,2}:\d{2}\b~u', $line));
+        $uncoveredData = array_filter($uncovered, [self::class, 'hasData']);
 
         return match (true) {
             ! $hasFacts, $coverage < 70, array_intersect($kinds, self::SEVERE) !== [] => 'bad',
@@ -157,7 +157,7 @@ class LocationFactChecker
             $numbers = array_values(array_filter($n[0], fn ($x) => ! preg_match('/^(19|20)\d{2}$/', $x)));
 
             $isHeading = $urls === [] && $numbers === [] && count($tokens) <= 3;
-            if ($isHeading || ($urls === [] && $tokens === [] && $numbers === [])) {
+            if ($isHeading || ($urls === [] && $tokens === [] && $numbers === []) || self::isLabelWithHours($line)) {
                 continue;
             }
             $considered++;
@@ -204,11 +204,46 @@ class LocationFactChecker
     }
 
     /**
-     * Uncovered line that carries data a route builder needs (a link or a time).
+     * Uncovered line that carries data a route builder needs (a real link or hours not sitting under a label).
      */
-    private function hasData(string $line): bool
+    public static function hasData(string $line): bool
     {
+        if (self::isLabelWithHours($line)) {
+            return false;
+        }
+
         return (bool) preg_match('~https?://|\b\d{1,2}:\d{2}\b~u', $line);
+    }
+
+    /**
+     * Word row like "קישור לאתר: | 12:15-15:00" — a label with hours pasted into the website cell.
+     */
+    public static function isLabelWithHours(string $line): bool
+    {
+        if (preg_match('~https?://~u', $line)) {
+            return false;
+        }
+        if (! preg_match('/\d{1,2}[:.]\d{2}/u', $line)) {
+            return false;
+        }
+        $rest = mb_strtolower(preg_replace('/\d{1,2}[:.]\d{2}|\d+/u', ' ', $line) ?? $line);
+        preg_match_all('/\p{L}{2,}/u', $rest, $w);
+        if ($w[0] === []) {
+            return true;
+        }
+
+        return collect($w[0])->every(fn ($t) => self::tokenIsLabel($t));
+    }
+
+    private static function tokenIsLabel(string $token): bool
+    {
+        $token = mb_strtolower($token);
+        if (in_array($token, self::LABEL_WORDS, true)) {
+            return true;
+        }
+
+        return in_array(mb_substr($token, 0, 1), self::HEBREW_PREFIXES, true)
+            && in_array(mb_substr($token, 1), self::LABEL_WORDS, true);
     }
 
     private function isLabel(string $token): bool

@@ -1,3 +1,7 @@
+@php
+  $dRu = $dRu ?? null;
+  $factLang = $factLang ?? 'he';
+@endphp
 <div class="row g-2 mb-2">
   <div class="col-12 col-md-3">
     <label class="form-label small mb-0">Группа</label>
@@ -7,13 +11,29 @@
       @endforeach
     </select>
   </div>
-  <div class="col-12 col-md-3">
-    <label class="form-label small mb-0">Тип (свой)</label>
-    <input type="text" name="type" class="form-control form-control-sm" dir="auto" value="{{ $d->type ?? '' }}">
+  <div class="col-12 col-md-8 fact-lang fact-lang-he {{ $factLang === 'ru' ? 'd-none' : '' }}">
+    <div class="row g-2">
+      <div class="col-12 col-md-4">
+        <label class="form-label small mb-0">Тип (свой)</label>
+        <input type="text" name="type" class="form-control form-control-sm" dir="auto" value="{{ $d->type ?? '' }}">
+      </div>
+      <div class="col-12 col-md-8">
+        <label class="form-label small mb-0">Название</label>
+        <input type="text" name="name" class="form-control form-control-sm" dir="auto" value="{{ $d->name ?? '' }}" required>
+      </div>
+    </div>
   </div>
-  <div class="col-12 col-md-5">
-    <label class="form-label small mb-0">Название</label>
-    <input type="text" name="name" class="form-control form-control-sm" dir="auto" value="{{ $d->name ?? '' }}" required>
+  <div class="col-12 col-md-8 fact-lang fact-lang-ru {{ $factLang === 'ru' ? '' : 'd-none' }}">
+    <div class="row g-2">
+      <div class="col-12 col-md-4">
+        <label class="form-label small mb-0">Тип (свой)</label>
+        <input type="text" name="type_ru" class="form-control form-control-sm" dir="auto" value="{{ $dRu->type ?? '' }}">
+      </div>
+      <div class="col-12 col-md-8">
+        <label class="form-label small mb-0">Название</label>
+        <input type="text" name="name_ru" class="form-control form-control-sm" dir="auto" value="{{ $dRu->name ?? '' }}">
+      </div>
+    </div>
   </div>
   <div class="col-12 col-md-1 d-flex align-items-end">
     <input type="hidden" name="is_kosher" value="0">
@@ -23,7 +43,7 @@
     </div>
   </div>
 </div>
-<div class="row g-2 mb-2">
+<div class="row g-2 mb-2 fact-lang fact-lang-he {{ $factLang === 'ru' ? 'd-none' : '' }}">
   <div class="col-12 col-md-7">
     <label class="form-label small mb-0">Текст</label>
     <textarea name="text" class="form-control form-control-sm" dir="auto" rows="2">{{ $d->text ?? '' }}</textarea>
@@ -31,6 +51,16 @@
   <div class="col-12 col-md-5">
     <label class="form-label small mb-0">Часы</label>
     <textarea name="hours" class="form-control form-control-sm" dir="auto" rows="2">{{ $d->hours ?? '' }}</textarea>
+  </div>
+</div>
+<div class="row g-2 mb-2 fact-lang fact-lang-ru {{ $factLang === 'ru' ? '' : 'd-none' }}">
+  <div class="col-12 col-md-7">
+    <label class="form-label small mb-0">Текст</label>
+    <textarea name="text_ru" class="form-control form-control-sm" dir="auto" rows="2">{{ $dRu->text ?? '' }}</textarea>
+  </div>
+  <div class="col-12 col-md-5">
+    <label class="form-label small mb-0">Часы</label>
+    <textarea name="hours_ru" class="form-control form-control-sm" dir="auto" rows="2">{{ $dRu->hours ?? '' }}</textarea>
   </div>
 </div>
 <div class="row g-2 mb-2">

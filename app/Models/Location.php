@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
@@ -10,6 +11,9 @@ class Location extends Model
 {
     protected $fillable = [
         'model',
+        'manufacturer_id',
+        'area_id',
+        'trip_role',
         'lat',
         'lng',
         'sort_order',
@@ -20,6 +24,12 @@ class Location extends Model
         'facts_coverage',
         'facts_review',
         'facts_split_at',
+    ];
+
+    public const TRIP_ROLES = [
+        'base' => 'Base (ночёвка)',
+        'place' => 'Place (точка)',
+        'end' => 'End (выезд/финиш)',
     ];
 
     public const FACTS_STATUSES = [
@@ -38,6 +48,21 @@ class Location extends Model
         'meta' => 'array',
         'meta_ru' => 'array',
     ];
+
+    public function manufacturer(): BelongsTo
+    {
+        return $this->belongsTo(Manufacturer::class);
+    }
+
+    public function area(): BelongsTo
+    {
+        return $this->belongsTo(Area::class);
+    }
+
+    public function attributeValues(): HasMany
+    {
+        return $this->hasMany(LocationAttribute::class);
+    }
 
     public function descriptions(): HasMany
     {
@@ -59,6 +84,14 @@ class Location extends Model
      *
      * @return array<string, mixed>|null
      */
+    public function nameFor(?Language $lang = null): string
+    {
+        $lang = $lang ?? Language::admin();
+        $d = $lang ? $this->descriptions->firstWhere('language_id', $lang->id) : null;
+
+        return $d->name ?? $this->descriptions->first()?->name ?? ($this->model ?: '#'.$this->id);
+    }
+
     public function heMeta(): ?array
     {
         return is_array($this->meta) ? $this->meta : null;

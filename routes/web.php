@@ -1,14 +1,20 @@
 <?php
 
+use App\Http\Controllers\Admin\AdminLangController;
+use App\Http\Controllers\Admin\AreaController;
+use App\Http\Controllers\Admin\AttributeController;
+use App\Http\Controllers\Admin\AttributeGroupController;
 use App\Http\Controllers\Admin\CategoryController;
 use App\Http\Controllers\Admin\DatabaseController;
 use App\Http\Controllers\Admin\HelpCategoryController;
 use App\Http\Controllers\Admin\LanguageController;
 use App\Http\Controllers\Admin\LocationController;
+use App\Http\Controllers\Admin\ManufacturerController;
 use App\Http\Controllers\Admin\MainController;
 use App\Http\Controllers\Admin\ProductController;
 use App\Http\Controllers\Admin\ProductPipelineController;
 use App\Http\Controllers\Admin\RoleController;
+use App\Http\Controllers\Admin\RouteSkeletonController;
 use App\Http\Controllers\Admin\TestController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\Auth\AdminLoginController;
@@ -25,6 +31,7 @@ Route::prefix('admin')
     ->middleware(['auth'])
     ->group(function () {
         Route::get('/', [MainController::class, 'index'])->name('index');
+        Route::get('lang/{code}', [AdminLangController::class, 'switch'])->name('lang');
 
         Route::post('categories/bulk-delete', [CategoryController::class, 'bulkDelete'])->name('categories.bulk-delete');
         Route::get('categories/{category}/vector/status', [CategoryController::class, 'vectorStatus'])->name('categories.vector.status');
@@ -38,21 +45,14 @@ Route::prefix('admin')
         Route::resource('help-categories', HelpCategoryController::class)->except(['show']);
 
         Route::get('test', [TestController::class, 'index'])->name('test.index');
-        Route::get('test/rag-vector', [TestController::class, 'ragVector'])->name('test.rag-vector');
-        Route::get('test/full-tour', [TestController::class, 'fullTour'])->name('test.full-tour');
-        Route::post('test/agent', [TestController::class, 'agent'])->name('test.agent');
-        Route::get('test/agent/{runId}', [TestController::class, 'agentStatus'])->name('test.agent.status');
-        Route::post('test/full-tour/plan', [TestController::class, 'fullTourPlan'])->name('test.full-tour.plan');
-        Route::post('test/full-tour/{runId}/refine-plan', [TestController::class, 'fullTourRefinePlan'])->name('test.full-tour.refine-plan');
-        Route::post('test/full-tour', [TestController::class, 'fullTourStart'])->name('test.full-tour.start');
-        Route::post('test/full-tour/{runId}/translate', [TestController::class, 'fullTourTranslate'])->name('test.full-tour.translate');
-        Route::post('test/full-tour/{runId}/curate', [TestController::class, 'fullTourCurate'])->name('test.full-tour.curate');
-        Route::post('test/full-tour/{runId}/clean', [TestController::class, 'fullTourCleanPool'])->name('test.full-tour.clean');
-        Route::post('test/full-tour/{runId}/translate-pool', [TestController::class, 'fullTourTranslatePool'])->name('test.full-tour.translate-pool');
-        Route::post('test/full-tour/{runId}/assemble', [TestController::class, 'fullTourAssemble'])->name('test.full-tour.assemble');
-        Route::get('test/full-tour/{runId}', [TestController::class, 'fullTourStatus'])->name('test.full-tour.status');
-        Route::post('test/search', [TestController::class, 'search'])->name('test.search');
-        Route::post('test/chat', [TestController::class, 'chat'])->name('test.chat');
+        Route::get('test/locations', [TestController::class, 'locations'])->name('test.locations');
+        Route::post('test/locations/search', [TestController::class, 'locationsSearch'])->name('test.locations.search');
+        Route::post('test/locations/assemble', [TestController::class, 'locationsAssemble'])->name('test.locations.assemble');
+        Route::get('test/scenario', [TestController::class, 'scenario'])->name('test.scenario');
+        Route::post('test/scenario/plan', [TestController::class, 'scenarioPlan'])->name('test.scenario.plan');
+        Route::post('test/scenario/audit', [TestController::class, 'scenarioAudit'])->name('test.scenario.audit');
+        Route::get('test/chain', [TestController::class, 'chain'])->name('test.chain');
+        Route::post('test/chain/run', [TestController::class, 'chainRun'])->name('test.chain.run');
         Route::post('test/prompt', [TestController::class, 'savePrompt'])->name('test.prompt.save');
 
         Route::get('products/pipeline/status', [ProductPipelineController::class, 'status'])->name('products.pipeline.status');
@@ -72,13 +72,29 @@ Route::prefix('admin')
         Route::get('locations/facts-pipeline/status', [LocationController::class, 'factsPipelineStatus'])->name('locations.facts-pipeline.status');
         Route::post('locations/facts-pipeline/start', [LocationController::class, 'factsPipelineStart'])->name('locations.facts-pipeline.start');
         Route::post('locations/facts-pipeline/cancel', [LocationController::class, 'factsPipelineCancel'])->name('locations.facts-pipeline.cancel');
+        Route::get('locations/vector-pipeline/status', [LocationController::class, 'vectorPipelineStatus'])->name('locations.vector-pipeline.status');
+        Route::post('locations/vector-pipeline/start', [LocationController::class, 'vectorPipelineStart'])->name('locations.vector-pipeline.start');
+        Route::post('locations/vector-pipeline/cancel', [LocationController::class, 'vectorPipelineCancel'])->name('locations.vector-pipeline.cancel');
+        Route::post('locations/{location}/index-vector', [LocationController::class, 'indexVector'])->name('locations.index-vector');
         Route::post('locations/{location}/check-facts', [LocationController::class, 'checkFacts'])->name('locations.check-facts');
         Route::post('locations/{location}/translate-ru', [LocationController::class, 'translateRu'])->name('locations.translate-ru');
+        Route::post('locations/{location}/translate-facts-ru', [LocationController::class, 'translateFactsRu'])->name('locations.translate-facts-ru');
         Route::post('locations/{location}/split-facts', [LocationController::class, 'splitFacts'])->name('locations.split-facts');
         Route::post('locations/{location}/facts', [LocationController::class, 'factStore'])->name('locations.facts.store');
         Route::put('locations/{location}/facts/{fact}', [LocationController::class, 'factUpdate'])->name('locations.facts.update');
         Route::delete('locations/{location}/facts/{fact}', [LocationController::class, 'factDestroy'])->name('locations.facts.destroy');
         Route::resource('locations', LocationController::class)->except(['show']);
+
+        Route::resource('manufacturers', ManufacturerController::class)->except(['show']);
+        Route::post('areas/{area}/assign-locations', [AreaController::class, 'assignLocations'])->name('areas.assign-locations');
+        Route::resource('areas', AreaController::class)->except(['show']);
+
+        Route::get('route-skeletons', [RouteSkeletonController::class, 'index'])->name('route-skeletons.index');
+        Route::get('route-skeletons/{route_skeleton}', [RouteSkeletonController::class, 'show'])->name('route-skeletons.show');
+        Route::post('route-skeletons/{route_skeleton}/translate-ru', [RouteSkeletonController::class, 'translateRu'])->name('route-skeletons.translate-ru');
+
+        Route::resource('attribute-groups', AttributeGroupController::class)->except(['show']);
+        Route::resource('attributes', AttributeController::class)->except(['show']);
 
         Route::resource('languages', LanguageController::class)->except(['show']);
 

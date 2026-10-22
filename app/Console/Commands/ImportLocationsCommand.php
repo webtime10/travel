@@ -107,6 +107,12 @@ class ImportLocationsCommand extends Command
         $this->newLine(2);
         $this->info("Created: {$created}, updated: {$updated}, RU reset (source text changed): {$ruReset}");
 
+        $catalog = app(\App\Services\LocationCatalogAssigner::class)->assign();
+        $this->info('Catalog: countries '.$catalog['countries'].', regions '.$catalog['regions'].', assigned '.$catalog['assigned']);
+        if ($catalog['unknown'] !== []) {
+            $this->warn('Unrecognized country/region: '.count($catalog['unknown']));
+        }
+
         return self::SUCCESS;
     }
 

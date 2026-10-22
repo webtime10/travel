@@ -86,8 +86,38 @@
 </div>
 @endif
 
+<div class="mb-3" style="max-width:28rem">
+  <label class="form-label">Manufacturer <span class="text-muted fw-normal">· страна</span></label>
+  <select name="manufacturer_id" class="form-select">
+    <option value="">—</option>
+    @foreach(($manufacturers ?? []) as $man)
+      <option value="{{ $man->id }}" {{ (string) old('manufacturer_id', $item->manufacturer_id ?? '') === (string) $man->id ? 'selected' : '' }}>{{ $man->nameFor($defaultLanguage) }}</option>
+    @endforeach
+  </select>
+</div>
+<div class="mb-3" style="max-width:28rem">
+  <label class="form-label">Area <span class="text-muted fw-normal">· район тура</span></label>
+  <select name="area_id" class="form-select">
+    <option value="">—</option>
+    @foreach(($areas ?? []) as $area)
+      <option value="{{ $area->id }}" {{ (string) old('area_id', $item->area_id ?? '') === (string) $area->id ? 'selected' : '' }}>{{ $area->nameFor($defaultLanguage) }}</option>
+    @endforeach
+  </select>
+  @if(empty($areas) || count($areas) === 0)
+    <div class="form-text">Справочник пуст — <a href="{{ route('admin.areas.create') }}">создать район</a></div>
+  @endif
+</div>
+<div class="mb-3" style="max-width:28rem">
+  <label class="form-label">Trip role <span class="text-muted fw-normal">· роль в туре</span></label>
+  <select name="trip_role" class="form-select">
+    <option value="">—</option>
+    @foreach(\App\Models\Location::TRIP_ROLES as $role => $label)
+      <option value="{{ $role }}" {{ (string) old('trip_role', $item->trip_role ?? '') === $role ? 'selected' : '' }}>{{ $label }}</option>
+    @endforeach
+  </select>
+</div>
 <div class="mb-3">
-  <label class="form-label">Categories</label>
+  <label class="form-label">Categories <span class="text-muted fw-normal">· область</span></label>
   @if(empty($categories) || count($categories) === 0)
     <p class="text-muted mb-0">No categories yet. <a href="{{ route('admin.categories.create') }}">Add category</a></p>
   @else
@@ -140,10 +170,60 @@
   <input type="number" name="sort_order" class="form-control" style="max-width:12rem" value="{{ old('sort_order', $item->sort_order ?? 0) }}" min="0">
 </div>
 <input type="hidden" name="status" value="0">
-<div class="form-check mb-3">
+<div class="form-check mb-4">
   <input class="form-check-input" type="checkbox" name="status" value="1" id="lstatus" {{ old('status', $item->status ?? true) ? 'checked' : '' }}>
   <label class="form-check-label" for="lstatus">Status</label>
 </div>
+
+@php
+  $heLangForm = $languages->firstWhere('code', 'he');
+  $ruLangForm = $languages->firstWhere('code', 'ru');
+  $attrRows = old('location_attributes');
+  if (! is_array($attrRows)) {
+    $attrRows = [];
+    foreach (($item?->attributeValues ?? collect()) as $val) {
+      $attrRows[$val->attribute_id]['attribute_id'] = $val->attribute_id;
+      if ($heLangForm && (int) $val->language_id === (int) $heLangForm->id) {
+        $attrRows[$val->attribute_id]['text_he'] = $val->text;
+      }
+      if ($ruLangForm && (int) $val->language_id === (int) $ruLangForm->id) {
+        $attrRows[$val->attribute_id]['text_ru'] = $val->text;
+      }
+    }
+    $attrRows = array_values($attrRows);
+  }
+@endphp
+<div class="mb-0">
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <label class="form-label mb-0">Attributes</label>
+    <button type="button" class="btn btn-sm btn-outline-secondary" id="addLocationAttr">+ атрибут</button>
+  </div>
+  <div id="locationAttrRows">
+    @forelse($attrRows as $i => $row)
+      @include('admin.locations._attribute_row', ['i' => $i, 'row' => $row, 'attributeGroups' => $attributeGroups ?? collect(), 'defaultLanguage' => $defaultLanguage])
+    @empty
+    @endforelse
+  </div>
+  <template id="locationAttrTpl">
+    @include('admin.locations._attribute_row', ['i' => '__I__', 'row' => [], 'attributeGroups' => $attributeGroups ?? collect(), 'defaultLanguage' => $defaultLanguage])
+  </template>
+</div>
+<script>
+  (function () {
+    const box = document.getElementById('locationAttrRows');
+    const tpl = document.getElementById('locationAttrTpl');
+    const add = document.getElementById('addLocationAttr');
+    if (!box || !tpl || !add) return;
+    add.addEventListener('click', function () {
+      const i = box.querySelectorAll('[data-attr-row]').length;
+      box.insertAdjacentHTML('beforeend', tpl.innerHTML.replaceAll('__I__', String(i)));
+    });
+    box.addEventListener('click', function (e) {
+      const btn = e.target.closest('[data-attr-remove]');
+      if (btn) btn.closest('[data-attr-row]')?.remove();
+    });
+  })();
+</script>
 
 <script>
   document.querySelectorAll('.location-json-copy').forEach(function (btn) {
