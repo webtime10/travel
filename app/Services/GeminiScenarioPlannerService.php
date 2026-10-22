@@ -635,7 +635,11 @@ PROMPT;
 - Типичная макроось Dolomites→Garda: Ortisei → Brunico → Riva (не Ortisei → Brunico → Molveno → Riva).
 - STAY-radius / CANDIDATES = только пул; НЕ значит «всё из пула можно в один день».
 - Stay: мысленно BASE→POI1→POI2→BASE — одна ось/кластер; после anchor обязательно проверь остальные POI того же STAY cluster; не склеивай противоположные стороны / далёкие cluster_*.
-- Brunico-stay: если Braies #116 и Misurina #117 оба доступны в пуле/каталоге — бери оба в один день (не Braies-only).
+- Brunico-stay: Braies #116 + Misurina #117 в ОДНОМ stay-дне (не Braies на переезде Ortisei→Brunico и Misurina отдельно).
+- На Ortisei→Brunico предпочитай лёгкий corridor stop; Braies лучше оставить для stay Brunico с Misurina.
+- Не клеить valley-short у базы (Tervela) к дню high-pass (Sella/Pordoi/Marmolada).
+- Long transfer Brunico→Garda: 1–2 corridor stop из CANDIDATES (Molveno/Nardis/Tovel-класс), не пустой и не один тонкий без причины.
+- theme=выезд: лёгкий финал (Limone/#395), не тяжёлый трек Busatte.
 - Marmolada / Fedaia — stay у Val Gardena ДО переезда в Brunico; на коротком Ortisei→Brunico не ставь полный Marmolada-пакет как transfer.
 - Transfer: OLD→stops→NEW vs прямой OLD→NEW; существенный path-detour → убери stop(s). Компактная связка из CANDIDATES с умеренным detour — можно оставить.
 - Stop в зоне OLD base без продвижения к NEW (Monte Pana/Alpacas при Ortisei→Brunico) — не transfer corridor.

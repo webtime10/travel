@@ -1045,6 +1045,8 @@ class TestController extends Controller
             || ! str_contains((string) $system, 'образцам стиля директора')
             || ! str_contains((string) $system, 'MACRO HUBS')
             || ! str_contains((string) $system, 'Braies #116 и Misurina #117')
+            || ! str_contains((string) $system, 'Braies лучше оставить для stay Brunico')
+            || ! str_contains((string) $system, 'Long transfer Brunico→Garda')
             || str_contains((string) $system, 'CURRENT CANDIDATES vs HISTORICAL VECTOR MATCHES')
             || str_contains((string) $system, '=== ENRICHMENT CHECK ===')
             || str_contains((string) $system, 'REFERENCE RHYTHM')

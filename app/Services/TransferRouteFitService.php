@@ -341,11 +341,21 @@ class TransferRouteFitService
         $plan = $marmo['plan'];
         $removed = array_merge($removed, $marmo['removed']);
 
+        // Braies с transfer прибытия → следующий stay той же базы (потом pair с Misurina)
+        $movePair = $this->relocateStayPairAnchorsFromTransfer($plan, $poisById);
+        $plan = $movePair['plan'];
+        $removed = array_merge($removed, $movePair['removed']);
+
         $stayScrub = $this->scrubStayDaySequences($plan, $poisById);
         $plan = $stayScrub['plan'];
         $removed = array_merge($removed, $stayScrub['removed']);
 
-        // Brunico: Braies → добить Misurina, если в каталоге/радиусе
+        // Tervela-класс не клеить к Sella/Pordoi/Marmolada дню
+        $valley = $this->scrubValleyShortOnMountainDay($plan, $poisById);
+        $plan = $valley['plan'];
+        $removed = array_merge($removed, $valley['removed']);
+
+        // Brunico: Braies ↔ Misurina в одном stay
         $pair = $this->enrichStayLinkedPairs($plan, $poisById);
         $plan = $pair['plan'];
         $removed = array_merge($removed, $pair['removed']);
@@ -354,9 +364,43 @@ class TransferRouteFitService
         $plan = $dedup['plan'];
         $removed = array_merge($removed, $dedup['removed']);
 
+        // 1) Повтор гео-объекта между днями (Pordoi #200/#218 и т.п.)
+        $geoDup = $this->scrubGeographicDuplicates($plan, $poisById);
+        $plan = $geoDup['plan'];
+        $removed = array_merge($removed, $geoDup['removed']);
+
+        // После всех срезов: пустой/тонкий transfer (~1.5ч base) → corridor из CANDIDATES
+        $thin = $this->enrichThinTransferDays($plan, $legs, $poisById);
+        $plan = $thin['plan'];
+        $removed = array_merge($removed, $thin['removed']);
+
+        // Enrich не должен вернуть Sass Pordoi после гео-дубля (RU≠HE имена)
+        $geoDup2 = $this->scrubGeographicDuplicates($plan, $poisById);
+        $plan = $geoDup2['plan'];
+        $removed = array_merge($removed, $geoDup2['removed']);
+
+        // Stay > max ч с 2+ activity → вынести самый длинный на соседний stay с запасом
+        $over = $this->scrubStayDayOverload($plan, $poisById);
+        $plan = $over['plan'];
+        $removed = array_merge($removed, $over['removed']);
+
+        // 2) Порядок stop на переезде: по axis progress OLD→NEW
+        $ord = $this->reorderTransferStopsByAxis($plan, $legs, $poisById);
+        $plan = $ord['plan'];
+        $removed = array_merge($removed, $ord['removed']);
+
+        // 3) Лишняя переправа: near-base до crossing; не два crossing подряд
+        $cross = $this->scrubLakeCrossingWaste($plan, $poisById);
+        $plan = $cross['plan'];
+        $removed = array_merge($removed, $cross['removed']);
+
         $ferry = $this->scrubFerryLimoneCompositeHours($plan);
         $plan = $ferry['plan'];
         $removed = array_merge($removed, $ferry['removed']);
+
+        $depHeavy = $this->scrubDepartureHeavyTrek($plan, $poisById);
+        $plan = $depHeavy['plan'];
+        $removed = array_merge($removed, $depHeavy['removed']);
 
         $dep = $this->scrubDepartureDayHours($plan, $query);
         $plan = $dep['plan'];
@@ -1561,7 +1605,113 @@ class TransferRouteFitService
     }
 
     /**
-     * Короткий transfer + тяжёлый Marmolada-пакет → оставить 1 лёгкий corridor stop.
+     * Часы activity/transfer_stop без base (для ёмкости дня).
+     *
+     * @param  array<string, mixed>  $day
+     */
+    private function activityHoursOfDay(array $day): float
+    {
+        $oid = (int) ($day['overnight']['id'] ?? 0);
+        $sum = 0.0;
+        foreach (is_array($day['places'] ?? null) ? $day['places'] : [] as $p) {
+            if (! is_array($p)) {
+                continue;
+            }
+            $pid = (int) ($p['id'] ?? 0);
+            $role = (string) ($p['role'] ?? '');
+            if ($pid === $oid || $role === 'base') {
+                continue;
+            }
+            if (isset($p['hours']) && is_numeric($p['hours'])) {
+                $sum += (float) $p['hours'];
+            }
+        }
+
+        return $sum;
+    }
+
+    /**
+     * Индексы stay/заезд у базы до transferIdx (не переезд/выезд).
+     *
+     * @param  list<array<string, mixed>>  $days
+     * @return list<int>
+     */
+    private function stayIndicesAtBaseBefore(array $days, int $baseId, int $transferIdx): array
+    {
+        $out = [];
+        for ($j = 0; $j < $transferIdx; $j++) {
+            $pd = $days[$j] ?? null;
+            if (! is_array($pd) || (int) ($pd['overnight']['id'] ?? 0) !== $baseId) {
+                continue;
+            }
+            $pt = mb_strtolower((string) ($pd['theme'] ?? ''));
+            if (str_contains($pt, 'переезд') || str_contains($pt, 'transfer')
+                || str_contains($pt, 'выезд') || str_contains($pt, 'departure')) {
+                continue;
+            }
+            $out[] = $j;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Stay с запасом часов под addHours; иначе null → нужен новый день.
+     *
+     * @param  list<array<string, mixed>>  $days
+     * @param  list<int>  $stayIndices
+     */
+    private function pickStayIdxWithSpareHours(array $days, array $stayIndices, float $addHours, float $maxDayH): ?int
+    {
+        $best = null;
+        $bestLoad = 999.0;
+        foreach ($stayIndices as $idx) {
+            $day = $days[$idx] ?? null;
+            if (! is_array($day)) {
+                continue;
+            }
+            $load = $this->activityHoursOfDay($day);
+            if ($load + $addHours <= $maxDayH + 0.05 && $load < $bestLoad) {
+                $best = $idx;
+                $bestLoad = $load;
+            }
+        }
+
+        return $best;
+    }
+
+    /**
+     * @param  list<array<string, mixed>>  $packagePlaces
+     * @param  array<string, mixed>  $overnight
+     * @return array<string, mixed>
+     */
+    private function makePackageStayDay(array $packagePlaces, array $overnight, string $dateHint = ''): array
+    {
+        $places = [];
+        foreach ($packagePlaces as $p) {
+            if (! is_array($p)) {
+                continue;
+            }
+            $p['role'] = 'activity';
+            $places[] = $p;
+        }
+
+        return [
+            'date' => $dateHint !== '' ? $dateHint : 'день',
+            'theme' => 'stay',
+            'summary' => 'Высокогорный день: Мармолада и озеро Федая.',
+            'overnight' => [
+                'id' => (int) ($overnight['id'] ?? 0),
+                'name' => (string) ($overnight['name'] ?? ''),
+            ],
+            'places' => $places,
+            'total_hours' => $this->sumPlaceHours($places),
+        ];
+    }
+
+    /**
+     * Короткий transfer: Marmolada/Fedaia → stay у OLD с запасом часов (не на перегруженный день).
+     * Нет места → новый stay-день перед переездом.
      *
      * @param  array<string, mixed>  $plan
      * @param  list<array<string, mixed>>  $legs
@@ -1574,13 +1724,18 @@ class TransferRouteFitService
             return ['plan' => $plan, 'removed' => []];
         }
         $maxDirect = (float) config('travel_route_fit.short_transfer_heavy_direct_km', 55.0);
-        $heavyIds = array_map('intval', (array) config('travel_route_fit.short_transfer_heavy_poi_ids', [187, 456, 129]));
-        $heavySet = array_fill_keys($heavyIds, true);
+        $packageIds = array_map('intval', (array) config('travel_route_fit.short_transfer_heavy_poi_ids', [187, 456, 129, 652]));
+        $packageSet = array_fill_keys(array_filter($packageIds, fn ($id) => $id > 0), true);
+        $anchors = array_map('intval', (array) config('travel_route_fit.short_transfer_package_anchor_ids', [456, 187]));
+        $companions = array_map('intval', (array) config('travel_route_fit.short_transfer_package_companion_ids', [652]));
+        $radius = (float) config('travel_route_fit.stay_radius_km', 70.0);
+        $maxDayH = (float) config('travel_route_fit.package_stay_max_day_hours', 7.0);
         $removed = [];
         $days = $plan['days'];
         $prevNightId = null;
 
-        foreach ($days as $i => $day) {
+        for ($i = 0; $i < count($days); $i++) {
+            $day = $days[$i];
             if (! is_array($day)) {
                 continue;
             }
@@ -1600,8 +1755,22 @@ class TransferRouteFitService
                     }
                 }
                 if ($direct !== null && $direct <= $maxDirect) {
+                    $oldBaseId = $prevNightId;
+                    $oldBase = $poisById[$oldBaseId] ?? null;
+                    $oldOvernight = is_array($days[$i - 1]['overnight'] ?? null)
+                        ? $days[$i - 1]['overnight']
+                        : ['id' => $oldBaseId, 'name' => (string) ($oldBase['name'] ?? '')];
+                    // overnight с предыдущего stay той же базы
+                    $stayIndices = $this->stayIndicesAtBaseBefore($days, $oldBaseId, $i);
+                    if ($stayIndices !== []) {
+                        $lastStay = $stayIndices[count($stayIndices) - 1];
+                        $oldOvernight = is_array($days[$lastStay]['overnight'] ?? null)
+                            ? $days[$lastStay]['overnight']
+                            : $oldOvernight;
+                    }
+
                     $places = is_array($day['places'] ?? null) ? $day['places'] : [];
-                    $heavy = [];
+                    $package = [];
                     $other = [];
                     $bases = [];
                     foreach ($places as $p) {
@@ -1614,27 +1783,953 @@ class TransferRouteFitService
                             $bases[] = $p;
                             continue;
                         }
-                        if (isset($heavySet[$pid])) {
-                            $heavy[] = $p;
+                        if (isset($packageSet[$pid])) {
+                            $package[] = $p;
                         } else {
                             $other[] = $p;
                         }
                     }
-                    if ($heavy !== []) {
-                        foreach ($heavy as $h) {
-                            $removed[] = 'день '.($i + 1).': убран heavy #'
-                                .(int) ($h['id'] ?? 0).' '.($h['name'] ?? '')
-                                .' (короткий transfer '.round($direct, 1)
-                                .' км: Marmolada-пакет = stay Val Gardena, не corridor)';
+
+                    $pkgHours = 0.0;
+                    foreach ($package as $h) {
+                        $pkgHours += is_numeric($h['hours'] ?? null) ? (float) $h['hours'] : 0.0;
+                    }
+
+                    if ($package !== []) {
+                        $stayIdx = $this->pickStayIdxWithSpareHours($days, $stayIndices, $pkgHours, $maxDayH);
+                        if ($stayIdx !== null) {
+                            $stayPlaces = is_array($days[$stayIdx]['places'] ?? null)
+                                ? $days[$stayIdx]['places'] : [];
+                            $have = [];
+                            foreach ($stayPlaces as $sp) {
+                                if (is_array($sp)) {
+                                    $have[(int) ($sp['id'] ?? 0)] = true;
+                                }
+                            }
+                            foreach ($package as $h) {
+                                $hid = (int) ($h['id'] ?? 0);
+                                if (isset($have[$hid])) {
+                                    $removed[] = 'день '.($i + 1).': убран package #'
+                                        .$hid.' с короткого transfer (уже в stay день '.($stayIdx + 1).')';
+                                    continue;
+                                }
+                                $h['role'] = 'activity';
+                                $stayPlaces[] = $h;
+                                $have[$hid] = true;
+                                $removed[] = 'день '.($i + 1).'→'.($stayIdx + 1).': #'
+                                    .$hid.' '.($h['name'] ?? '')
+                                    .' перенесён на stay OLD с запасом часов (не corridor)';
+                            }
+                            $days[$stayIdx]['places'] = $stayPlaces;
+                            $days[$stayIdx]['total_hours'] = $this->sumPlaceHours($stayPlaces);
+                        } else {
+                            $newDay = $this->makePackageStayDay($package, $oldOvernight, (string) ($day['date'] ?? ''));
+                            array_splice($days, $i, 0, [$newDay]);
+                            $removed[] = 'день '.($i + 1).': вставлен stay Marmolada/Fedaia перед переездом '
+                                .'(существующие stay перегружены, лимит '.$maxDayH.' ч)';
+                            $i++; // transfer сдвинулся
                         }
                         $days[$i]['places'] = array_merge($other, $bases);
                         $days[$i]['total_hours'] = $this->sumPlaceHours($days[$i]['places']);
+                        // обновить индексы stay после возможного splice
+                        $stayIndices = $this->stayIndicesAtBaseBefore($days, $oldBaseId, $i);
                     }
+
+                    // Пакет нигде у OLD не использован → добить stay с запасом / новый день
+                    if ($oldBase !== null) {
+                        $usedInOldStays = [];
+                        foreach ($this->stayIndicesAtBaseBefore($days, $oldBaseId, $i) as $j) {
+                            foreach (is_array($days[$j]['places'] ?? null) ? $days[$j]['places'] : [] as $sp) {
+                                if (is_array($sp)) {
+                                    $usedInOldStays[(int) ($sp['id'] ?? 0)] = true;
+                                }
+                            }
+                        }
+                        $hasAnchor = false;
+                        foreach ($anchors as $aid) {
+                            if (isset($usedInOldStays[$aid])) {
+                                $hasAnchor = true;
+                                break;
+                            }
+                        }
+                        $hasCompanion = false;
+                        foreach ($companions as $cid) {
+                            if (isset($usedInOldStays[$cid])) {
+                                $hasCompanion = true;
+                                break;
+                            }
+                        }
+                        if (! $hasAnchor || ! $hasCompanion) {
+                            $toAdd = [];
+                            $addHours = 0.0;
+                            if (! $hasAnchor) {
+                                foreach ($anchors as $aid) {
+                                    if ($aid > 0 && isset($poisById[$aid]) && ! isset($usedInOldStays[$aid])) {
+                                        $toAdd[] = $aid;
+                                        $addHours += is_numeric($poisById[$aid]['poi_duration'] ?? null)
+                                            ? (float) $poisById[$aid]['poi_duration'] : 4.0;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (! $hasCompanion) {
+                                foreach ($companions as $cid) {
+                                    if ($cid > 0 && isset($poisById[$cid]) && ! isset($usedInOldStays[$cid])) {
+                                        $toAdd[] = $cid;
+                                        $addHours += is_numeric($poisById[$cid]['poi_duration'] ?? null)
+                                            ? (float) $poisById[$cid]['poi_duration'] : 1.5;
+                                        break;
+                                    }
+                                }
+                            }
+                            $addPlaces = [];
+                            foreach ($toAdd as $tid) {
+                                $src = $poisById[$tid];
+                                $km = $this->geo->km($oldBase, $src);
+                                if ($km === null || $km > $radius) {
+                                    continue;
+                                }
+                                $hours = is_numeric($src['poi_duration'] ?? null)
+                                    ? (float) $src['poi_duration'] : 2.0;
+                                $addPlaces[] = [
+                                    'id' => $tid,
+                                    'name' => (string) ($src['name'] ?? ''),
+                                    'hours' => $hours,
+                                    'role' => 'activity',
+                                    'note' => 'PHP: Marmolada-пакет на stay OLD до короткого transfer',
+                                ];
+                            }
+                            if ($addPlaces !== []) {
+                                $stayIndices = $this->stayIndicesAtBaseBefore($days, $oldBaseId, $i);
+                                $realAddH = 0.0;
+                                foreach ($addPlaces as $ap) {
+                                    $realAddH += (float) ($ap['hours'] ?? 0);
+                                }
+                                $stayIdx = $this->pickStayIdxWithSpareHours($days, $stayIndices, $realAddH, $maxDayH);
+                                if ($stayIdx !== null) {
+                                    $stayPlaces = is_array($days[$stayIdx]['places'] ?? null)
+                                        ? $days[$stayIdx]['places'] : [];
+                                    foreach ($addPlaces as $ap) {
+                                        $stayPlaces[] = $ap;
+                                        $removed[] = 'день '.($stayIdx + 1).': добавлен #'.$ap['id'].' '
+                                            .$ap['name']
+                                            .' (Marmolada-пакет на stay с запасом часов)';
+                                    }
+                                    $days[$stayIdx]['places'] = $stayPlaces;
+                                    $days[$stayIdx]['total_hours'] = $this->sumPlaceHours($stayPlaces);
+                                } else {
+                                    $newDay = $this->makePackageStayDay($addPlaces, $oldOvernight, (string) ($day['date'] ?? ''));
+                                    array_splice($days, $i, 0, [$newDay]);
+                                    $removed[] = 'день '.($i + 1).': вставлен stay под Marmolada-пакет '
+                                        .'(лимит '.$maxDayH.' ч на существующих днях)';
+                                    $i++;
+                                }
+                            }
+                        }
+                    }
+
+                    // Также: если какой-то stay уже перегружен пакетом+долиной — вынести пакет в отдельный день
+                    $split = $this->splitOverloadedPackageStay($days, $oldBaseId, $i, $packageSet, $oldOvernight, $maxDayH);
+                    $days = $split['days'];
+                    $removed = array_merge($removed, $split['removed']);
+                    $i = $split['transfer_idx'];
+
+                    $placesNow = is_array($days[$i]['places'] ?? null) ? $days[$i]['places'] : [];
+                    $hasNewBase = false;
+                    foreach ($placesNow as $p) {
+                        if (is_array($p) && (int) ($p['id'] ?? 0) === $nightId) {
+                            $hasNewBase = true;
+                            break;
+                        }
+                    }
+                    if (! $hasNewBase && isset($poisById[$nightId])) {
+                        $nb = $poisById[$nightId];
+                        $placesNow[] = [
+                            'id' => $nightId,
+                            'name' => (string) ($day['overnight']['name'] ?? $nb['name'] ?? ''),
+                            'hours' => 1.5,
+                            'role' => 'base',
+                        ];
+                        $days[$i]['places'] = $placesNow;
+                        $days[$i]['total_hours'] = $this->sumPlaceHours($placesNow);
+                        $removed[] = 'день '.($i + 1).': добавлен base #'.$nightId
+                            .' (прибытие на короткий transfer)';
+                    }
+                }
+            }
+            $nightId = (int) (($days[$i]['overnight']['id'] ?? 0));
+            if ($nightId > 0) {
+                $prevNightId = $nightId;
+            }
+        }
+
+        $plan['days'] = $days;
+
+        return ['plan' => $plan, 'removed' => $removed];
+    }
+
+    /**
+     * Stay у OLD: activity > max и есть Marmolada-пакет + другие POI → вынести пакет в новый день.
+     *
+     * @param  list<array<string, mixed>>  $days
+     * @param  array<int, true>  $packageSet
+     * @param  array<string, mixed>  $oldOvernight
+     * @return array{days: list<array<string, mixed>>, removed: list<string>, transfer_idx: int}
+     */
+    private function splitOverloadedPackageStay(
+        array $days,
+        int $oldBaseId,
+        int $transferIdx,
+        array $packageSet,
+        array $oldOvernight,
+        float $maxDayH,
+    ): array {
+        $removed = [];
+        foreach ($this->stayIndicesAtBaseBefore($days, $oldBaseId, $transferIdx) as $j) {
+            $day = $days[$j];
+            if (! is_array($day)) {
+                continue;
+            }
+            $load = $this->activityHoursOfDay($day);
+            if ($load <= $maxDayH + 0.05) {
+                continue;
+            }
+            $oid = (int) ($day['overnight']['id'] ?? 0);
+            $pkg = [];
+            $rest = [];
+            foreach (is_array($day['places'] ?? null) ? $day['places'] : [] as $p) {
+                if (! is_array($p)) {
+                    continue;
+                }
+                $pid = (int) ($p['id'] ?? 0);
+                $role = (string) ($p['role'] ?? '');
+                if ($pid === $oid || $role === 'base') {
+                    $rest[] = $p;
+                    continue;
+                }
+                if (isset($packageSet[$pid])) {
+                    $pkg[] = $p;
+                } else {
+                    $rest[] = $p;
+                }
+            }
+            if ($pkg === [] || $rest === []) {
+                continue;
+            }
+            // есть и пакет, и другие activity
+            $hasOtherAct = false;
+            foreach ($rest as $p) {
+                $pid = (int) ($p['id'] ?? 0);
+                $role = (string) ($p['role'] ?? '');
+                if ($pid !== $oid && $role !== 'base') {
+                    $hasOtherAct = true;
+                    break;
+                }
+            }
+            if (! $hasOtherAct) {
+                continue;
+            }
+            $days[$j]['places'] = $rest;
+            $days[$j]['total_hours'] = $this->sumPlaceHours($rest);
+            $newDay = $this->makePackageStayDay($pkg, $oldOvernight, (string) ($day['date'] ?? ''));
+            array_splice($days, $j + 1, 0, [$newDay]);
+            $transferIdx++;
+            $removed[] = 'день '.($j + 1).': Marmolada-пакет вынесен в новый stay (было ~'
+                .round($load, 1).' ч > лимит '.$maxDayH.' ч)';
+            break;
+        }
+
+        return ['days' => $days, 'removed' => $removed, 'transfer_idx' => $transferIdx];
+    }
+
+    /**
+     * Якорь stay-pair (Braies) с transfer-дня прибытия → следующий stay той же overnight.
+     *
+     * @param  array<string, mixed>  $plan
+     * @param  array<int, array<string, mixed>>  $poisById
+     * @return array{plan: array<string, mixed>, removed: list<string>}
+     */
+    private function relocateStayPairAnchorsFromTransfer(array $plan, array $poisById): array
+    {
+        if (! is_array($plan['days'] ?? null)) {
+            return ['plan' => $plan, 'removed' => []];
+        }
+        $moveIds = array_map('intval', (array) config('travel_route_fit.stay_pair_move_from_transfer', [116]));
+        $moveSet = array_fill_keys(array_filter($moveIds, fn ($id) => $id > 0), true);
+        if ($moveSet === []) {
+            return ['plan' => $plan, 'removed' => []];
+        }
+        $removed = [];
+        $days = $plan['days'];
+        $n = count($days);
+
+        for ($i = 0; $i < $n; $i++) {
+            $day = $days[$i];
+            if (! is_array($day)) {
+                continue;
+            }
+            $theme = mb_strtolower((string) ($day['theme'] ?? ''));
+            if (! str_contains($theme, 'переезд') && ! str_contains($theme, 'transfer')) {
+                continue;
+            }
+            $oid = (int) ($day['overnight']['id'] ?? 0);
+            if ($oid <= 0) {
+                continue;
+            }
+            $places = is_array($day['places'] ?? null) ? $day['places'] : [];
+            $keep = [];
+            $moved = [];
+            foreach ($places as $p) {
+                if (! is_array($p)) {
+                    continue;
+                }
+                $pid = (int) ($p['id'] ?? 0);
+                $role = (string) ($p['role'] ?? '');
+                if ($pid > 0 && isset($moveSet[$pid]) && $role !== 'base' && $pid !== $oid) {
+                    $moved[] = $p;
+                    continue;
+                }
+                $keep[] = $p;
+            }
+            if ($moved === []) {
+                continue;
+            }
+            // Не оставлять transfer совсем без stop (иначе снова ~1.5ч только base)
+            if ($keep === [] || $this->activityHoursOfDay(['overnight' => $day['overnight'] ?? [], 'places' => $keep]) < 0.05) {
+                $removed[] = 'день '.($i + 1).': Braies-класс оставлен на transfer (единственный corridor stop; иначе пустой переезд)';
+                continue;
+            }
+            // следующий stay с той же ночёвкой
+            $stayIdx = null;
+            for ($j = $i + 1; $j < $n; $j++) {
+                $nd = $days[$j];
+                if (! is_array($nd)) {
+                    continue;
+                }
+                $nt = mb_strtolower((string) ($nd['theme'] ?? ''));
+                if (str_contains($nt, 'переезд') || str_contains($nt, 'transfer')
+                    || str_contains($nt, 'выезд') || str_contains($nt, 'departure')) {
+                    continue;
+                }
+                if ((int) ($nd['overnight']['id'] ?? 0) === $oid) {
+                    $stayIdx = $j;
+                    break;
+                }
+            }
+            if ($stayIdx === null) {
+                continue;
+            }
+            $days[$i]['places'] = $keep;
+            $days[$i]['total_hours'] = $this->sumPlaceHours($keep);
+            $stayPlaces = is_array($days[$stayIdx]['places'] ?? null) ? $days[$stayIdx]['places'] : [];
+            $have = [];
+            foreach ($stayPlaces as $sp) {
+                if (is_array($sp)) {
+                    $have[(int) ($sp['id'] ?? 0)] = true;
+                }
+            }
+            foreach ($moved as $m) {
+                $mid = (int) ($m['id'] ?? 0);
+                if (isset($have[$mid])) {
+                    $removed[] = 'день '.($i + 1).': убран duplicate #'.$mid
+                        .' с transfer (уже в stay день '.($stayIdx + 1).')';
+                    continue;
+                }
+                $m['role'] = 'activity';
+                $stayPlaces[] = $m;
+                $have[$mid] = true;
+                $removed[] = 'день '.($i + 1).'→'.($stayIdx + 1).': #'
+                    .$mid.' '.($m['name'] ?? '')
+                    .' перенесён с transfer на stay (связка Braies/Misurina у базы #'.$oid.')';
+            }
+            $days[$stayIdx]['places'] = $stayPlaces;
+            $days[$stayIdx]['total_hours'] = $this->sumPlaceHours($stayPlaces);
+        }
+
+        $plan['days'] = $days;
+
+        return ['plan' => $plan, 'removed' => $removed];
+    }
+
+    /**
+     * Valley-short у базы + high-pass в том же дне → убрать short (Tervela ≠ Sella/Pordoi).
+     *
+     * @param  array<string, mixed>  $plan
+     * @param  array<int, array<string, mixed>>  $poisById
+     * @return array{plan: array<string, mixed>, removed: list<string>}
+     */
+    private function scrubValleyShortOnMountainDay(array $plan, array $poisById): array
+    {
+        if (! is_array($plan['days'] ?? null) || $poisById === []) {
+            return ['plan' => $plan, 'removed' => []];
+        }
+        $maxH = (float) config('travel_route_fit.valley_short_max_hours', 1.0);
+        $maxKm = (float) config('travel_route_fit.valley_short_max_km_from_base', 10.0);
+        $highIds = array_fill_keys(
+            array_map('intval', (array) config('travel_route_fit.high_pass_poi_ids', [])),
+            true
+        );
+        if ($highIds === []) {
+            return ['plan' => $plan, 'removed' => []];
+        }
+        $removed = [];
+        $days = $plan['days'];
+
+        foreach ($days as $i => $day) {
+            if (! is_array($day)) {
+                continue;
+            }
+            $theme = mb_strtolower((string) ($day['theme'] ?? ''));
+            if (str_contains($theme, 'переезд') || str_contains($theme, 'transfer')
+                || str_contains($theme, 'выезд') || str_contains($theme, 'departure')
+                || str_contains($theme, 'заезд') || str_contains($theme, 'arrival')) {
+                continue;
+            }
+            $oid = (int) ($day['overnight']['id'] ?? 0);
+            $base = $poisById[$oid] ?? null;
+            if ($oid <= 0 || $base === null) {
+                continue;
+            }
+            $places = is_array($day['places'] ?? null) ? $day['places'] : [];
+            $hasHigh = false;
+            foreach ($places as $p) {
+                if (is_array($p) && isset($highIds[(int) ($p['id'] ?? 0)])) {
+                    $hasHigh = true;
+                    break;
+                }
+            }
+            if (! $hasHigh) {
+                continue;
+            }
+            $keep = [];
+            foreach ($places as $p) {
+                if (! is_array($p)) {
+                    continue;
+                }
+                $pid = (int) ($p['id'] ?? 0);
+                $role = (string) ($p['role'] ?? '');
+                if ($pid === $oid || $role === 'base' || isset($highIds[$pid])) {
+                    $keep[] = $p;
+                    continue;
+                }
+                $src = $poisById[$pid] ?? null;
+                $hours = is_numeric($p['hours'] ?? null) ? (float) $p['hours']
+                    : (is_numeric($src['poi_duration'] ?? null) ? (float) $src['poi_duration'] : 99);
+                $km = ($src !== null) ? $this->geo->km($base, $src) : null;
+                if ($hours <= $maxH && $km !== null && $km <= $maxKm) {
+                    $removed[] = 'день '.($i + 1).': убран #'.$pid.' '.($p['name'] ?? '')
+                        .' (valley-short у базы + high-pass в том же дне; Tervela≠Sella/Pordoi)';
+                    continue;
+                }
+                $keep[] = $p;
+            }
+            $days[$i]['places'] = $keep;
+            $days[$i]['total_hours'] = $this->sumPlaceHours($keep);
+        }
+
+        $plan['days'] = $days;
+
+        return ['plan' => $plan, 'removed' => $removed];
+    }
+
+    /**
+     * Long transfer с <N stop → добить лучший unused candidate из leg.
+     *
+     * @param  array<string, mixed>  $plan
+     * @param  list<array<string, mixed>>  $legs
+     * @param  array<int, array<string, mixed>>  $poisById
+     * @return array{plan: array<string, mixed>, removed: list<string>}
+     */
+    /**
+     * Любой тонкий transfer (часто ~1.5ч только base): добить corridor из CANDIDATES.
+     * Short → ≥1 stop; long → ≥2. Не package, не id/имя-дубль уже использованного.
+     *
+     * @param  array<string, mixed>  $plan
+     * @param  list<array<string, mixed>>  $legs
+     * @param  array<int, array<string, mixed>>  $poisById
+     * @return array{plan: array<string, mixed>, removed: list<string>}
+     */
+    private function enrichThinTransferDays(array $plan, array $legs, array $poisById): array
+    {
+        if (! is_array($plan['days'] ?? null) || $legs === []) {
+            return ['plan' => $plan, 'removed' => []];
+        }
+        $longKm = (float) config('travel_route_fit.long_transfer_direct_km', 120.0);
+        $minLong = max(1, (int) config('travel_route_fit.long_transfer_enrich_min_stops', 2));
+        $minShort = max(1, (int) config('travel_route_fit.short_transfer_enrich_min_stops', 1));
+        $minActH = (float) config('travel_route_fit.thin_transfer_min_activity_hours', 2.0);
+        $heavy = array_fill_keys(
+            array_map('intval', (array) config('travel_route_fit.short_transfer_heavy_poi_ids', [])),
+            true
+        );
+        $dupKm = (float) config('travel_route_fit.geo_duplicate_km', 2.0);
+
+        /** @var list<array{id: int, name: string, pt: ?array<string, mixed>}> */
+        $usedMeta = [];
+        $used = [];
+        foreach ($plan['days'] as $day) {
+            if (! is_array($day)) {
+                continue;
+            }
+            $oid = (int) ($day['overnight']['id'] ?? 0);
+            foreach (is_array($day['places'] ?? null) ? $day['places'] : [] as $p) {
+                if (! is_array($p)) {
+                    continue;
+                }
+                $pid = (int) ($p['id'] ?? 0);
+                $role = (string) ($p['role'] ?? '');
+                if ($pid <= 0 || $pid === $oid || $role === 'base') {
+                    continue;
+                }
+                $used[$pid] = true;
+                $src = $poisById[$pid] ?? null;
+                $usedMeta[] = [
+                    'id' => $pid,
+                    'name' => (string) ($p['name'] ?? ($src['name'] ?? '')),
+                    'pt' => ($src !== null && isset($src['lat'], $src['lng'])) ? $src : null,
+                ];
+            }
+        }
+
+        $removed = [];
+        $days = $plan['days'];
+        $prevNightId = null;
+
+        foreach ($days as $i => $day) {
+            if (! is_array($day)) {
+                continue;
+            }
+            $theme = mb_strtolower((string) ($day['theme'] ?? ''));
+            $isTransfer = str_contains($theme, 'переезд') || str_contains($theme, 'transfer');
+            $nightId = (int) ($day['overnight']['id'] ?? 0);
+            if ($isTransfer && $nightId > 0 && $prevNightId !== null) {
+                $leg = $this->legForNightChange($legs, $prevNightId, $nightId);
+                $direct = is_array($leg) && is_numeric($leg['direct_km'] ?? null)
+                    ? (float) $leg['direct_km'] : null;
+                if ($direct === null) {
+                    $from = $poisById[$prevNightId] ?? null;
+                    $to = $poisById[$nightId] ?? null;
+                    if ($from !== null && $to !== null) {
+                        $direct = $this->geo->km($from, $to);
+                    }
+                }
+                if ($direct === null || ! is_array($leg)) {
+                    if ($nightId > 0) {
+                        $prevNightId = $nightId;
+                    }
+                    continue;
+                }
+                $minStops = $direct >= $longKm ? $minLong : $minShort;
+                $places = is_array($day['places'] ?? null) ? $day['places'] : [];
+                $stops = 0;
+                $stopIds = [];
+                $actH = 0.0;
+                foreach ($places as $p) {
+                    if (! is_array($p)) {
+                        continue;
+                    }
+                    $pid = (int) ($p['id'] ?? 0);
+                    $role = (string) ($p['role'] ?? '');
+                    if ($pid === $nightId || $role === 'base') {
+                        continue;
+                    }
+                    $stops++;
+                    $stopIds[$pid] = true;
+                    if (isset($p['hours']) && is_numeric($p['hours'])) {
+                        $actH += (float) $p['hours'];
+                    }
+                }
+                $needByStops = max(0, $minStops - $stops);
+                $needByHours = ($actH + 0.05 < $minActH) ? max(1, $needByStops) : $needByStops;
+                if ($needByHours <= 0) {
+                    if ($nightId > 0) {
+                        $prevNightId = $nightId;
+                    }
+                    continue;
+                }
+                $cands = is_array($leg['candidates_llm'] ?? null) ? $leg['candidates_llm'] : [];
+                if ($cands === [] && is_array($leg['candidates_all'] ?? null)) {
+                    $allowed = array_fill_keys(
+                        (array) config('travel_route_fit.llm_allowed_fits', ['excellent', 'good', 'acceptable']),
+                        true
+                    );
+                    foreach ($leg['candidates_all'] as $c) {
+                        if (is_array($c) && isset($allowed[(string) ($c['route_fit'] ?? '')])) {
+                            $cands[] = $c;
+                        }
+                    }
+                }
+                $maxCross = (float) config('travel_route_fit.thin_enrich_max_cross_km', 22.0);
+                $blockKm = (float) config('travel_route_fit.thin_enrich_block_km', 2.0);
+                // short: lighter; long: меньший cross/detour (Molveno лучше Nardis-крюка)
+                usort($cands, function (array $a, array $b) use ($direct, $longKm) {
+                    if ($direct >= $longKm) {
+                        $ca = is_numeric($a['cross_track_km'] ?? null) ? (float) $a['cross_track_km'] : 99;
+                        $cb = is_numeric($b['cross_track_km'] ?? null) ? (float) $b['cross_track_km'] : 99;
+                        if ($ca !== $cb) {
+                            return $ca <=> $cb;
+                        }
+                        $da = is_numeric($a['detour_km'] ?? null) ? (float) $a['detour_km'] : 99;
+                        $db = is_numeric($b['detour_km'] ?? null) ? (float) $b['detour_km'] : 99;
+
+                        return $da <=> $db;
+                    }
+                    $pa = (($a['prefer'] ?? '') === 'lighter_ok') ? 0 : 1;
+                    $pb = (($b['prefer'] ?? '') === 'lighter_ok') ? 0 : 1;
+                    if ($pa !== $pb) {
+                        return $pa <=> $pb;
+                    }
+                    $ha = is_numeric($a['poi_duration'] ?? null) ? (float) $a['poi_duration'] : 9;
+                    $hb = is_numeric($b['poi_duration'] ?? null) ? (float) $b['poi_duration'] : 9;
+
+                    return $ha <=> $hb;
+                });
+                $need = $needByHours;
+                $added = 0;
+                foreach ($cands as $c) {
+                    if ($need <= 0) {
+                        break;
+                    }
+                    if (! is_array($c)) {
+                        continue;
+                    }
+                    $cid = (int) ($c['id'] ?? 0);
+                    $cname = (string) ($c['name'] ?? ($poisById[$cid]['name'] ?? ''));
+                    if ($cid <= 0 || isset($used[$cid]) || isset($stopIds[$cid])) {
+                        continue;
+                    }
+                    if (isset($heavy[$cid])) {
+                        continue;
+                    }
+                    if ($direct >= $longKm && is_numeric($c['cross_track_km'] ?? null)
+                        && (float) $c['cross_track_km'] > $maxCross) {
+                        continue;
+                    }
+                    $src = $poisById[$cid] ?? null;
+                    $blocked = false;
+                    foreach ($usedMeta as $um) {
+                        if ($this->isConfiguredSameSite((int) $um['id'], $cid)) {
+                            $blocked = true;
+                            break;
+                        }
+                        if ($um['pt'] !== null && $src !== null && isset($src['lat'], $src['lng'])) {
+                            $km = $this->geo->km($um['pt'], $src);
+                            // Не возвращать тот же объект после гео-дубля (Pordoi 0 км, RU≠HE)
+                            if ($km !== null && $km <= $blockKm) {
+                                $blocked = true;
+                                break;
+                            }
+                        }
+                        if ($this->namesSuggestSameSite($um['name'], $cname)) {
+                            $blocked = true;
+                            break;
+                        }
+                    }
+                    if ($blocked) {
+                        continue;
+                    }
+                    $hours = is_numeric($c['poi_duration'] ?? null) ? (float) $c['poi_duration']
+                        : (is_numeric($src['poi_duration'] ?? null) ? (float) $src['poi_duration'] : 2.0);
+                    // short: не тащить 4ч stop
+                    if ($direct < $longKm && $hours > 2.5) {
+                        continue;
+                    }
+                    $places[] = [
+                        'id' => $cid,
+                        'name' => $cname,
+                        'hours' => $hours,
+                        'role' => 'transfer_stop',
+                        'note' => 'PHP thin-transfer enrich (fit='.($c['route_fit'] ?? '?').')',
+                    ];
+                    $used[$cid] = true;
+                    $stopIds[$cid] = true;
+                    $usedMeta[] = [
+                        'id' => $cid,
+                        'name' => $cname,
+                        'pt' => ($src !== null && isset($src['lat'], $src['lng'])) ? $src : null,
+                    ];
+                    $need--;
+                    $added++;
+                    $actH += $hours;
+                    $removed[] = 'день '.($i + 1).': добавлен corridor #'.$cid.' '.$cname
+                        .' (тонкий transfer: было '.$stops.' stop / '.round($actH - $hours, 1)
+                        .' ч → enrich, direct '.round($direct, 1).' км)';
+                    $stops++;
+                }
+                if ($added > 0) {
+                    // base прибытия
+                    $hasBase = false;
+                    foreach ($places as $p) {
+                        if (is_array($p) && ((int) ($p['id'] ?? 0) === $nightId || ($p['role'] ?? '') === 'base')) {
+                            $hasBase = true;
+                            break;
+                        }
+                    }
+                    if (! $hasBase && isset($poisById[$nightId])) {
+                        $places[] = [
+                            'id' => $nightId,
+                            'name' => (string) ($day['overnight']['name'] ?? $poisById[$nightId]['name'] ?? ''),
+                            'hours' => 1.5,
+                            'role' => 'base',
+                        ];
+                    }
+                    $days[$i]['places'] = $places;
+                    $days[$i]['total_hours'] = $this->sumPlaceHours($places);
                 }
             }
             if ($nightId > 0) {
                 $prevNightId = $nightId;
             }
+        }
+
+        $plan['days'] = $days;
+
+        return ['plan' => $plan, 'removed' => $removed];
+    }
+
+    /**
+     * Stay с activity > max и ≥2 POI → перенести самый длинный на соседний stay с запасом.
+     *
+     * @param  array<string, mixed>  $plan
+     * @param  array<int, array<string, mixed>>  $poisById
+     * @return array{plan: array<string, mixed>, removed: list<string>}
+     */
+    private function scrubStayDayOverload(array $plan, array $poisById): array
+    {
+        if (! is_array($plan['days'] ?? null)) {
+            return ['plan' => $plan, 'removed' => []];
+        }
+        $maxH = (float) config('travel_route_fit.package_stay_max_day_hours', 7.0);
+        $removed = [];
+        $days = $plan['days'];
+        $n = count($days);
+
+        for ($i = 0; $i < $n; $i++) {
+            $day = $days[$i];
+            if (! is_array($day)) {
+                continue;
+            }
+            $theme = mb_strtolower((string) ($day['theme'] ?? ''));
+            if (str_contains($theme, 'переезд') || str_contains($theme, 'transfer')
+                || str_contains($theme, 'выезд') || str_contains($theme, 'departure')) {
+                continue;
+            }
+            $load = $this->activityHoursOfDay($day);
+            if ($load <= $maxH + 0.05) {
+                continue;
+            }
+            $oid = (int) ($day['overnight']['id'] ?? 0);
+            $acts = [];
+            $bases = [];
+            foreach (is_array($day['places'] ?? null) ? $day['places'] : [] as $p) {
+                if (! is_array($p)) {
+                    continue;
+                }
+                $pid = (int) ($p['id'] ?? 0);
+                $role = (string) ($p['role'] ?? '');
+                if ($pid === $oid || $role === 'base') {
+                    $bases[] = $p;
+                } else {
+                    $acts[] = $p;
+                }
+            }
+            if (count($acts) < 2) {
+                continue;
+            }
+            usort($acts, function (array $a, array $b) {
+                $ha = is_numeric($a['hours'] ?? null) ? (float) $a['hours'] : 0;
+                $hb = is_numeric($b['hours'] ?? null) ? (float) $b['hours'] : 0;
+
+                return $hb <=> $ha;
+            });
+            $move = array_shift($acts);
+            $moveH = is_numeric($move['hours'] ?? null) ? (float) $move['hours'] : 0;
+            // соседний stay той же базы с запасом
+            $target = null;
+            for ($j = $i + 1; $j < $n; $j++) {
+                $nd = $days[$j];
+                if (! is_array($nd) || (int) ($nd['overnight']['id'] ?? 0) !== $oid) {
+                    continue;
+                }
+                $nt = mb_strtolower((string) ($nd['theme'] ?? ''));
+                if (str_contains($nt, 'переезд') || str_contains($nt, 'transfer')
+                    || str_contains($nt, 'выезд') || str_contains($nt, 'departure')) {
+                    continue;
+                }
+                if ($this->activityHoursOfDay($nd) + $moveH <= $maxH + 0.05) {
+                    $target = $j;
+                    break;
+                }
+            }
+            if ($target === null) {
+                for ($j = $i - 1; $j >= 0; $j--) {
+                    $nd = $days[$j];
+                    if (! is_array($nd) || (int) ($nd['overnight']['id'] ?? 0) !== $oid) {
+                        continue;
+                    }
+                    $nt = mb_strtolower((string) ($nd['theme'] ?? ''));
+                    if (str_contains($nt, 'переезд') || str_contains($nt, 'transfer')
+                        || str_contains($nt, 'выезд') || str_contains($nt, 'departure')) {
+                        continue;
+                    }
+                    if ($this->activityHoursOfDay($nd) + $moveH <= $maxH + 0.05) {
+                        $target = $j;
+                        break;
+                    }
+                }
+            }
+            if ($target === null) {
+                // новый stay после текущего
+                $newDay = [
+                    'date' => (string) ($day['date'] ?? ''),
+                    'theme' => 'stay',
+                    'summary' => (string) ($move['name'] ?? 'Продолжение программы'),
+                    'overnight' => is_array($day['overnight'] ?? null) ? $day['overnight'] : ['id' => $oid, 'name' => ''],
+                    'places' => [$move],
+                    'total_hours' => $this->sumPlaceHours([$move]),
+                ];
+                array_splice($days, $i + 1, 0, [$newDay]);
+                $n++;
+                $days[$i]['places'] = array_merge($acts, $bases);
+                $days[$i]['total_hours'] = $this->sumPlaceHours($days[$i]['places']);
+                $removed[] = 'день '.($i + 1).': #'
+                    .(int) ($move['id'] ?? 0).' '.($move['name'] ?? '')
+                    .' вынесен в новый stay (перегруз ~'.round($load, 1).' ч > '.$maxH.' ч)';
+                continue;
+            }
+            $tp = is_array($days[$target]['places'] ?? null) ? $days[$target]['places'] : [];
+            $tp[] = $move;
+            $days[$target]['places'] = $tp;
+            $days[$target]['total_hours'] = $this->sumPlaceHours($tp);
+            $days[$i]['places'] = array_merge($acts, $bases);
+            $days[$i]['total_hours'] = $this->sumPlaceHours($days[$i]['places']);
+            $removed[] = 'день '.($i + 1).'→'.($target + 1).': #'
+                .(int) ($move['id'] ?? 0).' '.($move['name'] ?? '')
+                .' перенесён (перегруз stay ~'.round($load, 1).' ч)';
+        }
+
+        $plan['days'] = $days;
+
+        return ['plan' => $plan, 'removed' => $removed];
+    }
+
+    /**
+     * Выезд: убрать тяжёлый трек; если пусто — поставить Limone/ferry из каталога у базы.
+     *
+     * @param  array<string, mixed>  $plan
+     * @param  array<int, array<string, mixed>>  $poisById
+     * @return array{plan: array<string, mixed>, removed: list<string>}
+     */
+    private function scrubDepartureHeavyTrek(array $plan, array $poisById): array
+    {
+        if (! is_array($plan['days'] ?? null)) {
+            return ['plan' => $plan, 'removed' => []];
+        }
+        $heavyH = (float) config('travel_route_fit.departure_heavy_min_hours', 2.8);
+        $prefer = array_map('intval', (array) config('travel_route_fit.departure_prefer_poi_ids', [32, 395, 333]));
+        $removed = [];
+        $days = $plan['days'];
+        $used = [];
+        foreach ($days as $day) {
+            if (! is_array($day)) {
+                continue;
+            }
+            foreach (is_array($day['places'] ?? null) ? $day['places'] : [] as $p) {
+                if (is_array($p)) {
+                    $used[(int) ($p['id'] ?? 0)] = true;
+                }
+            }
+        }
+
+        foreach ($days as $i => $day) {
+            if (! is_array($day)) {
+                continue;
+            }
+            $theme = mb_strtolower((string) ($day['theme'] ?? ''));
+            if (! str_contains($theme, 'выезд') && ! str_contains($theme, 'departure')) {
+                continue;
+            }
+            $oid = (int) ($day['overnight']['id'] ?? 0);
+            $base = $poisById[$oid] ?? null;
+            $places = is_array($day['places'] ?? null) ? $day['places'] : [];
+            $acts = [];
+            $bases = [];
+            foreach ($places as $p) {
+                if (! is_array($p)) {
+                    continue;
+                }
+                $pid = (int) ($p['id'] ?? 0);
+                $role = (string) ($p['role'] ?? '');
+                if ($pid === $oid || $role === 'base') {
+                    $bases[] = $p;
+                } else {
+                    $acts[] = $p;
+                }
+            }
+            $kept = [];
+            foreach ($acts as $a) {
+                $pid = (int) ($a['id'] ?? 0);
+                $hours = is_numeric($a['hours'] ?? null) ? (float) $a['hours'] : 0;
+                $load = (string) (($poisById[$pid]['physical_load'] ?? '') ?: '');
+                $isPrefer = in_array($pid, $prefer, true);
+                if (! $isPrefer && ($hours >= $heavyH || in_array($load, ['heavy', 'very_heavy'], true))) {
+                    $removed[] = 'день '.($i + 1).': убран #'.$pid.' '.($a['name'] ?? '')
+                        .' (выезд: тяжёлый/длинный trek — лучше Limone-класс)';
+                    unset($used[$pid]);
+                    continue;
+                }
+                $kept[] = $a;
+            }
+            // Не добавлять вторую переправу, если water-crossing уже был в туре
+            $planHasCrossing = false;
+            foreach ($days as $dj => $dd) {
+                if ($dj === $i || ! is_array($dd)) {
+                    continue;
+                }
+                foreach (is_array($dd['places'] ?? null) ? $dd['places'] : [] as $pp) {
+                    if (! is_array($pp)) {
+                        continue;
+                    }
+                    $ppid = (int) ($pp['id'] ?? 0);
+                    $psrc = $poisById[$ppid] ?? null;
+                    if ($this->isWaterCrossingPlace((string) ($pp['name'] ?? ''), $psrc)) {
+                        $planHasCrossing = true;
+                        break 2;
+                    }
+                }
+            }
+            if ($kept === [] && $base !== null) {
+                $radius = (float) config('travel_route_fit.stay_radius_km', 70.0);
+                foreach ($prefer as $pid) {
+                    if ($pid <= 0 || isset($used[$pid]) || ! isset($poisById[$pid])) {
+                        continue;
+                    }
+                    $src = $poisById[$pid];
+                    $nm = (string) ($src['name'] ?? '');
+                    if ($planHasCrossing && $this->isWaterCrossingPlace($nm, $src)) {
+                        continue;
+                    }
+                    $km = $this->geo->km($base, $src);
+                    if ($km === null || $km > $radius) {
+                        continue;
+                    }
+                    $hours = is_numeric($src['poi_duration'] ?? null) ? (float) $src['poi_duration'] : 2.0;
+                    // Имя из каталога; если иврит — всё равно id, UI/LLM уже на русском в других днях
+                    $kept[] = [
+                        'id' => $pid,
+                        'name' => $nm !== '' ? $nm : ('POI #'.$pid),
+                        'hours' => min($hours, 2.5),
+                        'role' => 'activity',
+                        'note' => 'PHP departure prefer (лёгкий финал)',
+                    ];
+                    $used[$pid] = true;
+                    $removed[] = 'день '.($i + 1).': добавлен #'.$pid.' '
+                        .$nm.' (выезд: лёгкий финал без повторной переправы)';
+                    break;
+                }
+            }
+            $days[$i]['places'] = array_merge($kept, $bases);
+            $days[$i]['total_hours'] = $this->sumPlaceHours($days[$i]['places']);
         }
 
         $plan['days'] = $days;
@@ -1914,6 +3009,369 @@ class TransferRouteFitService
         }
 
         return false;
+    }
+
+    /**
+     * Повтор того же географического объекта в разных днях (разные id, близко по координатам).
+     * Первый день выигрывает — поздний stop/activity снимается.
+     *
+     * @param  array<string, mixed>  $plan
+     * @param  array<int, array<string, mixed>>  $poisById
+     * @return array{plan: array<string, mixed>, removed: list<string>}
+     */
+    private function scrubGeographicDuplicates(array $plan, array $poisById): array
+    {
+        if (! is_array($plan['days'] ?? null) || $poisById === []) {
+            return ['plan' => $plan, 'removed' => []];
+        }
+        $dupKm = (float) config('travel_route_fit.geo_duplicate_km', 2.0);
+        if ($dupKm <= 0) {
+            return ['plan' => $plan, 'removed' => []];
+        }
+        /** @var list<array{id: int, day: int, name: string, pt: array<string, mixed>}> */
+        $keptPrevDays = [];
+        $removed = [];
+        $days = $plan['days'];
+
+        foreach ($days as $i => $day) {
+            if (! is_array($day)) {
+                continue;
+            }
+            $nightId = (int) ($day['overnight']['id'] ?? 0);
+            $keepPlaces = [];
+            /** @var list<array{id: int, day: int, name: string, pt: array<string, mixed>}> */
+            $keptThisDay = [];
+            foreach (is_array($day['places'] ?? null) ? $day['places'] : [] as $place) {
+                if (! is_array($place)) {
+                    continue;
+                }
+                $pid = (int) ($place['id'] ?? 0);
+                $role = (string) ($place['role'] ?? '');
+                $pname = (string) ($place['name'] ?? '');
+                if ($pid <= 0 || $pid === $nightId || $role === 'base') {
+                    $keepPlaces[] = $place;
+                    continue;
+                }
+                $src = $poisById[$pid] ?? null;
+                if ($src === null || ! isset($src['lat'], $src['lng'])) {
+                    $keepPlaces[] = $place;
+                    continue;
+                }
+                if ($pname === '') {
+                    $pname = (string) ($src['name'] ?? '');
+                }
+                // Против ПРЕДЫДУЩИХ дней: пары id (200↔218) или имя/латиница + km.
+                $hit = null;
+                $hitKm = null;
+                foreach ($keptPrevDays as $prev) {
+                    if ($this->isConfiguredSameSite((int) $prev['id'], $pid)) {
+                        $hit = $prev;
+                        $hitKm = $this->geo->km($prev['pt'], $src) ?? 0.0;
+                        break;
+                    }
+                    $km = $this->geo->km($prev['pt'], $src);
+                    if ($km === null || $km > $dupKm) {
+                        continue;
+                    }
+                    if (! $this->namesSuggestSameSite($prev['name'], $pname)) {
+                        continue;
+                    }
+                    $hit = $prev;
+                    $hitKm = $km;
+                    break;
+                }
+                if ($hit !== null) {
+                    $removed[] = 'день '.($i + 1).': убран #'.$pid.' '.$pname
+                        .' (гео-дубль ~'.round((float) $hitKm, 1)
+                        .' км от #'.$hit['id'].' «'.$hit['name'].'» в дне '.$hit['day']
+                        .' — тот же географический объект)';
+                    continue;
+                }
+                $keptThisDay[] = ['id' => $pid, 'day' => $i + 1, 'name' => $pname, 'pt' => $src];
+                $keepPlaces[] = $place;
+            }
+            $days[$i]['places'] = $keepPlaces;
+            $days[$i]['total_hours'] = $this->sumPlaceHours($keepPlaces);
+            foreach ($keptThisDay as $row) {
+                $keptPrevDays[] = $row;
+            }
+        }
+
+        $plan['days'] = $days;
+
+        return ['plan' => $plan, 'removed' => $removed];
+    }
+
+    /**
+     * Явные пары одного объекта (Sass Pordoi #200 ↔ Funivia #218), независимо от языка имени.
+     */
+    private function isConfiguredSameSite(int $a, int $b): bool
+    {
+        if ($a <= 0 || $b <= 0 || $a === $b) {
+            return false;
+        }
+        $map = (array) config('travel_route_fit.geo_same_site_ids', []);
+        $list = array_map('intval', (array) ($map[$a] ?? []));
+
+        return in_array($b, $list, true);
+    }
+
+    /**
+     * Sass Pordoi / Funivia Sass Pordoi — да; Тервела vs Селла в одной долине — нет.
+     * Достаёт и латиницу из смешанных HE/RU строк («… Funivia Sass Pordoi»).
+     */
+    private function namesSuggestSameSite(string $a, string $b): bool
+    {
+        $tokens = function (string $s): array {
+            $s = mb_strtolower($s);
+            $out = [];
+            // латинские куски (pordoi из ивритского названия канатки)
+            if (preg_match_all('/[a-z]{4,}/', $s, $lm)) {
+                foreach ($lm[0] as $lat) {
+                    $out[$lat] = true;
+                }
+            }
+            $s = preg_replace('/[^\p{L}\p{N}\s]+/u', ' ', $s) ?? $s;
+            $parts = preg_split('/\s+/u', trim($s)) ?: [];
+            $stop = [
+                'the', 'and', 'del', 'della', 'delle', 'di', 'da', 'a', 'al', 'la', 'le', 'il', 'lo',
+                'озеро', 'lago', 'lake', 'waterfall', 'водопад', 'cascata', 'מפל',
+                'перевал', 'passo', 'pass', 'тропа', 'маршрут', 'пешеходн', 'прогулка',
+                'канатка', 'funivia', 'cable', 'day', 'יום', 'רכבל', 'המומלץ',
+            ];
+            foreach ($parts as $p) {
+                $p = trim($p);
+                if (mb_strlen($p) < 4) {
+                    continue;
+                }
+                foreach ($stop as $st) {
+                    if ($p === $st || str_starts_with($p, $st)) {
+                        continue 2;
+                    }
+                }
+                $out[$p] = true;
+            }
+
+            return array_keys($out);
+        };
+        $ta = $tokens($a);
+        $tb = $tokens($b);
+        if ($ta === [] || $tb === []) {
+            return false;
+        }
+        foreach ($ta as $t) {
+            foreach ($tb as $u) {
+                if ($t === $u) {
+                    return true;
+                }
+                if (mb_strlen($t) >= 5 && mb_strlen($u) >= 5
+                    && (str_contains($t, $u) || str_contains($u, $t))) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Transfer: упорядочить stop по axis progress OLD→NEW (не путать порядок Нардис/Мольвено).
+     *
+     * @param  array<string, mixed>  $plan
+     * @param  list<array<string, mixed>>  $legs
+     * @param  array<int, array<string, mixed>>  $poisById
+     * @return array{plan: array<string, mixed>, removed: list<string>}
+     */
+    private function reorderTransferStopsByAxis(array $plan, array $legs, array $poisById): array
+    {
+        if (! is_array($plan['days'] ?? null)) {
+            return ['plan' => $plan, 'removed' => []];
+        }
+        $removed = [];
+        $days = $plan['days'];
+        $prevNightId = null;
+
+        foreach ($days as $i => $day) {
+            if (! is_array($day)) {
+                continue;
+            }
+            $theme = mb_strtolower((string) ($day['theme'] ?? ''));
+            $isTransfer = str_contains($theme, 'переезд') || str_contains($theme, 'transfer');
+            $nightId = (int) ($day['overnight']['id'] ?? 0);
+            if ($isTransfer && $nightId > 0 && $prevNightId !== null) {
+                $from = $poisById[$prevNightId] ?? null;
+                $to = $poisById[$nightId] ?? null;
+                if ($from !== null && $to !== null
+                    && isset($from['lat'], $from['lng'], $to['lat'], $to['lng'])) {
+                    $stops = [];
+                    $bases = [];
+                    foreach (is_array($day['places'] ?? null) ? $day['places'] : [] as $p) {
+                        if (! is_array($p)) {
+                            continue;
+                        }
+                        $pid = (int) ($p['id'] ?? 0);
+                        $role = (string) ($p['role'] ?? '');
+                        if ($pid === $nightId || $role === 'base') {
+                            $bases[] = $p;
+                            continue;
+                        }
+                        $src = $poisById[$pid] ?? null;
+                        $progress = 0.5;
+                        if ($src !== null && isset($src['lat'], $src['lng'])) {
+                            $axis = $this->axisMetrics($from, $to, $src);
+                            $progress = (float) ($axis['progress'] ?? 0.5);
+                        }
+                        $stops[] = $p + ['_progress' => $progress];
+                    }
+                    if (count($stops) >= 2) {
+                        $before = array_map(fn ($s) => (int) ($s['id'] ?? 0), $stops);
+                        usort($stops, fn ($a, $b) => ($a['_progress'] <=> $b['_progress']));
+                        $after = array_map(fn ($s) => (int) ($s['id'] ?? 0), $stops);
+                        if ($before !== $after) {
+                            $removed[] = 'день '.($i + 1).': порядок transfer_stop по оси OLD→NEW: '
+                                .implode('→', $before).' → '.implode('→', $after);
+                        }
+                        foreach ($stops as &$s) {
+                            unset($s['_progress']);
+                        }
+                        unset($s);
+                        $days[$i]['places'] = array_merge($stops, $bases);
+                        $days[$i]['total_hours'] = $this->sumPlaceHours($days[$i]['places']);
+                    }
+                }
+            }
+            if ($nightId > 0) {
+                $prevNightId = $nightId;
+            }
+        }
+
+        $plan['days'] = $days;
+
+        return ['plan' => $plan, 'removed' => $removed];
+    }
+
+    /**
+     * Лишняя переправа через озеро: near-base прогулка до crossing в том же дне;
+     * не повторять water-crossing в соседних днях.
+     *
+     * @param  array<string, mixed>  $plan
+     * @param  array<int, array<string, mixed>>  $poisById
+     * @return array{plan: array<string, mixed>, removed: list<string>}
+     */
+    private function scrubLakeCrossingWaste(array $plan, array $poisById): array
+    {
+        if (! is_array($plan['days'] ?? null)) {
+            return ['plan' => $plan, 'removed' => []];
+        }
+        $nearKm = (float) config('travel_route_fit.lake_crossing_near_base_km', 18.0);
+        $removed = [];
+        $days = $plan['days'];
+        $hadCrossingPrev = false;
+
+        foreach ($days as $i => $day) {
+            if (! is_array($day)) {
+                $hadCrossingPrev = false;
+                continue;
+            }
+            $oid = (int) ($day['overnight']['id'] ?? 0);
+            $base = $poisById[$oid] ?? null;
+            $places = is_array($day['places'] ?? null) ? $day['places'] : [];
+            $crossings = [];
+            $nearBase = [];
+            $other = [];
+            $bases = [];
+            $dayHasCrossing = false;
+
+            foreach ($places as $p) {
+                if (! is_array($p)) {
+                    continue;
+                }
+                $pid = (int) ($p['id'] ?? 0);
+                $role = (string) ($p['role'] ?? '');
+                if ($pid === $oid || $role === 'base') {
+                    $bases[] = $p;
+                    continue;
+                }
+                $src = $poisById[$pid] ?? null;
+                $name = (string) ($p['name'] ?? ($src['name'] ?? ''));
+                if ($this->isWaterCrossingPlace($name, $src)) {
+                    $dayHasCrossing = true;
+                    $crossings[] = $p;
+                    continue;
+                }
+                $km = ($base !== null && $src !== null) ? $this->geo->km($base, $src) : null;
+                if ($km !== null && $km <= $nearKm) {
+                    $nearBase[] = $p;
+                } else {
+                    $other[] = $p;
+                }
+            }
+
+            // Соседний день уже имел переправу — снять crossing с текущего
+            if ($hadCrossingPrev && $crossings !== []) {
+                foreach ($crossings as $c) {
+                    $removed[] = 'день '.($i + 1).': убран #'.(int) ($c['id'] ?? 0).' '
+                        .($c['name'] ?? '')
+                        .' (повторная переправа: water-crossing уже был в предыдущем дне)';
+                }
+                $crossings = [];
+                $dayHasCrossing = false;
+            }
+
+            // Переставлять только если в дне есть переправа; иначе не трогать stay (Carezza/Bulla)
+            if ($crossings !== []) {
+                $origNonBase = [];
+                foreach ($places as $p) {
+                    if (! is_array($p)) {
+                        continue;
+                    }
+                    $pid = (int) ($p['id'] ?? 0);
+                    $role = (string) ($p['role'] ?? '');
+                    if ($pid !== $oid && $role !== 'base') {
+                        $origNonBase[] = $pid;
+                    }
+                }
+                $orderedNonBase = array_merge($nearBase, $other, $crossings);
+                $after = [];
+                foreach ($orderedNonBase as $p) {
+                    $after[] = (int) ($p['id'] ?? 0);
+                }
+                if ($origNonBase !== $after) {
+                    $removed[] = 'день '.($i + 1).': порядок дня — near-base до переправы через озеро ('
+                        .implode('→', $origNonBase).' → '.implode('→', $after).')';
+                }
+                $days[$i]['places'] = array_merge($orderedNonBase, $bases);
+                $days[$i]['total_hours'] = $this->sumPlaceHours($days[$i]['places']);
+            } elseif ($hadCrossingPrev && ! $dayHasCrossing) {
+                // crossings сняты как повтор — уже собрали nearBase/other выше без crossings
+                $days[$i]['places'] = array_merge($nearBase, $other, $bases);
+                $days[$i]['total_hours'] = $this->sumPlaceHours($days[$i]['places']);
+            }
+
+            $hadCrossingPrev = $dayHasCrossing;
+        }
+
+        $plan['days'] = $days;
+
+        return ['plan' => $plan, 'removed' => $removed];
+    }
+
+    /**
+     * @param  array<string, mixed>|null  $src
+     */
+    private function isWaterCrossingPlace(string $name, ?array $src): bool
+    {
+        $blob = mb_strtolower($name.' '.(string) ($src['name'] ?? '').' '.(string) ($src['snippet'] ?? ''));
+        if ($blob === '' || $blob === '  ') {
+            return false;
+        }
+
+        return (bool) preg_match(
+            '/ferry|traghett|battello|vaporetto|motonave|water\s*taxi|boat\s*trip|cruise|'
+            .'שייט|מעבורת|ספינ|'
+            .'переправ|паром|катер|корабл|круиз|водн\w*\s*прогул|водн\w*\s*переправ/ui',
+            $blob
+        );
     }
 
     /**

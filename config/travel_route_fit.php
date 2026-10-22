@@ -67,14 +67,52 @@ return [
     'overnight_secondary_hubs' => ['molveno'],
     'overnight_primary_hubs' => ['ortisei', 'brunico', 'cortina', 'garda', 'milan', 'verona'],
 
-    // Stay linked pairs: якорь в дне + пара в радиусе базы → добить (Braies→Misurina)
+    // Stay linked pairs: якорь в дне + пара в радиусе базы → добить (Braies↔Misurina)
     'stay_linked_pairs' => [
         116 => 117,
+        117 => 116,
     ],
+    // Эти якоря с transfer-дня прибытия → следующий stay той же базы (не «Braies на переезде + Misurina одна»)
+    'stay_pair_move_from_transfer' => [116],
 
-    // Короткий transfer: полный Marmolada-пакет → срезать до 1 лёгкого stop
+    // Valley-short у базы нельзя клеить к high-pass / ледник дню (Tervela + Sella/Pordoi)
+    'valley_short_max_hours' => 1.0,
+    'valley_short_max_km_from_base' => 10.0,
+    'high_pass_poi_ids' => [200, 218, 651, 157, 456, 187, 652, 129],
+
+    // Тонкий transfer (~только base 1.5ч) — добить corridor из CANDIDATES
+    'long_transfer_enrich_min_stops' => 2,
+    'short_transfer_enrich_min_stops' => 1,
+    'thin_transfer_min_activity_hours' => 2.0,
+
+    // Выезд: не тяжёлый трек (Busatte); предпочесть Limone/ferry
+    'departure_heavy_min_hours' => 2.8,
+    'departure_prefer_poi_ids' => [32, 395, 333],
+
+    // Короткий transfer: Marmolada/Fedaia-пакет → не corridor, а stay у OLD base
     'short_transfer_heavy_direct_km' => (float) env('TRAVEL_ROUTE_FIT_SHORT_HEAVY_DIRECT', 55.0),
-    'short_transfer_heavy_poi_ids' => [187, 456, 129],
+    'short_transfer_heavy_poi_ids' => [187, 456, 129, 652],
+    // Если пакет так и не попал в stay OLD — добить якорь+компаньона у stay с запасом часов
+    'short_transfer_package_anchor_ids' => [456, 187],
+    'short_transfer_package_companion_ids' => [652],
+    // Не клеить пакет на день, где activity+пакет > max (иначе ~10ч). Нет места → новый stay-день.
+    'package_stay_max_day_hours' => (float) env('TRAVEL_ROUTE_FIT_PKG_STAY_MAX_H', 7.0),
+
+    // Проверки маршрута (общие, не prompt):
+    // 1) повтор того же гео-объекта в РАЗНЫХ днях (Sass Pordoi #200 и Funivia #218).
+    // Имена RU/HE часто не матчятся → явные пары id + сходство имён/латиницы.
+    'geo_duplicate_km' => (float) env('TRAVEL_ROUTE_FIT_GEO_DUP_KM', 2.0),
+    'geo_same_site_ids' => [
+        200 => [218],
+        218 => [200],
+    ],
+    // thin-enrich: не возвращать POI ближе этого км к уже использованному (даже без имени)
+    'thin_enrich_block_km' => (float) env('TRAVEL_ROUTE_FIT_THIN_BLOCK_KM', 2.0),
+    // long enrich: не добирать stop с cross_track выше (Nardis-крюк)
+    'thin_enrich_max_cross_km' => (float) env('TRAVEL_ROUTE_FIT_THIN_MAX_CROSS', 22.0),
+    // 2) порядок transfer_stop по axis progress OLD→NEW
+    // 3) лишняя переправа: не два water-crossing подряд; near-base walk до crossing в том же дне
+    'lake_crossing_near_base_km' => (float) env('TRAVEL_ROUTE_FIT_CROSS_NEAR_KM', 18.0),
 
     'distance_driver' => env('TRAVEL_ROUTE_FIT_DRIVER', 'haversine'),
 ];
