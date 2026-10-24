@@ -13,10 +13,11 @@ class IndexLocationsCommand extends Command
 {
     protected $signature = 'travel:index-locations
                             {--pending : Only locations not yet in RAG}
+                            {--fresh : Delete existing location vectors, then reindex all}
                             {--id= : One location id}
                             {--sync : Run in this process, no queue}';
 
-    protected $description = 'Embed catalog locations into pgsql_rag (location_id)';
+    protected $description = 'Embed catalog locations into pgsql_rag (location_id). Use --fresh after reparse.';
 
     public function handle(
         RagDatabaseService $ragDb,
@@ -34,10 +35,19 @@ class IndexLocationsCommand extends Command
             $this->info($migrated['message'] ?? 'schema ok');
         }
 
+        if ($this->option('fresh')) {
+            $wiped = $ragDb->wipeLocationDocuments();
+            $this->warn("Wiped location RAG docs: {$wiped}");
+            if ($pipeline->running()) {
+                $pipeline->cancel();
+                $this->warn('Cancelled previous vector pipeline');
+            }
+        }
+
         $one = (int) $this->option('id');
         if ($one > 0) {
             $ids = [$one];
-        } elseif ($this->option('pending')) {
+        } elseif ($this->option('pending') && ! $this->option('fresh')) {
             $ids = $this->pendingIds($ragDb);
         } else {
             $ids = Location::query()->orderBy('id')->pluck('id')->map(fn ($id) => (int) $id)->all();

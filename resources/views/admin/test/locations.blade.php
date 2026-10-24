@@ -144,7 +144,7 @@
       html += '<div class="p-2 rounded bg-white border text-muted">Ничего не нашёл</div>';
     } else {
       html += '<div class="table-responsive"><table class="table table-sm table-bordered bg-white mb-0"><thead><tr>';
-      html += '<th>#</th><th>Район</th><th>Роль</th><th>id</th><th>Название</th><th>Страна</th><th>Область</th><th>score</th><th></th></tr></thead><tbody>';
+      html += '<th>#</th><th>Район</th><th>Роль</th><th>id</th><th>Название</th><th>Страна</th><th>Region</th><th>score</th><th></th></tr></thead><tbody>';
       loc.forEach(function (row, i) {
         var dates = (row.date_from && row.date_to) ? (row.date_from + '–' + row.date_to) : '';
         html += '<tr>';

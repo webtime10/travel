@@ -87,7 +87,7 @@
           <th style="width:40px"><input type="checkbox" class="form-check-input" id="selectAll"></th>
           <th>Model</th>
           <th style="max-width:280px">Name</th>
-          <th>Categories</th>
+          <th>Regions</th>
           <th>Sort</th>
           <th></th>
         </tr>

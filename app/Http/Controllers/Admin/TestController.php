@@ -4,6 +4,8 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\AppSetting;
+use App\Models\GoldenLabel;
+use App\Models\Language;
 use App\Services\GeminiChatService;
 use App\Services\GeminiKeyPool;
 use App\Services\GeminiScenarioPlannerService;
@@ -84,6 +86,49 @@ class TestController extends Controller
             'indexed' => $indexed,
             'systemPrompt' => $systemPrompt,
             'testMode' => 'locations',
+        ]);
+    }
+
+    /**
+     * Mock UI: assemble trip from golden days by slots/labels (interactive demo).
+     */
+    public function phpMock()
+    {
+        $defaultLanguage = Language::admin();
+        $labels = GoldenLabel::query()
+            ->with('descriptions')
+            ->where('status', true)
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->get();
+
+        $hubLabels = $labels->filter(fn (GoldenLabel $l) => str_starts_with((string) $l->slug, 'hub-'))->values();
+        $otherLabels = $labels->reject(fn (GoldenLabel $l) => str_starts_with((string) $l->slug, 'hub-'))->values();
+
+        return view('admin.test.php', [
+            'pageTitle' => 'Test — PHP',
+            'defaultLanguage' => $defaultLanguage,
+            'hubLabels' => $hubLabels,
+            'otherLabels' => $otherLabels,
+            'testMode' => 'php',
+        ]);
+    }
+
+    /** Mock: build a day from map click + radius. */
+    public function phpMap()
+    {
+        return view('admin.test.php_map', [
+            'pageTitle' => 'Test — PHP · карта',
+            'testMode' => 'php',
+        ]);
+    }
+
+    /** Mock: build a day via area text → location list (Gemini/vector later). */
+    public function phpGemini()
+    {
+        return view('admin.test.php_gemini', [
+            'pageTitle' => 'Test — PHP · Gemini локации',
+            'testMode' => 'php',
         ]);
     }
 
@@ -228,7 +273,7 @@ class TestController extends Controller
         $prompts = $this->chainPrompts();
 
         return view('admin.test.chain', [
-            'pageTitle' => 'Test 3 — Цепочка',
+            'pageTitle' => 'Gemini — 3 проверки',
             'geminiKeys' => $keys->count(),
             'indexed' => $indexed,
             'prompts' => $prompts,
@@ -278,6 +323,7 @@ class TestController extends Controller
             'plan_v1' => $result['plan_v1'] ?? null,
             'audits' => $result['audits'] ?? [],
             'plan_v2' => $result['plan_v2'] ?? null,
+            'scrub_v2' => $result['scrub_v2'] ?? [],
             'steps_ms' => $result['steps_ms'] ?? [],
             'raw' => $result['raw'] ?? [],
             'message' => $result['message'] ?? null,

@@ -2,7 +2,7 @@
 
 @section('content')
 <div class="d-flex justify-content-between align-items-center mb-4">
-  <h4 class="mb-0">Categories</h4>
+  <h4 class="mb-0">Regions</h4>
   <div class="page-toolbar">
     <button type="submit" form="categoriesBulkDeleteForm" class="btn btn-icon btn-outline-danger" title="Delete" onclick="return confirm('Delete selected?');"><i class="bx bx-trash bx-md"></i></button>
     <a href="{{ route('admin.categories.create') }}" class="btn btn-icon btn-primary" title="Add"><i class="bx bx-plus bx-md"></i></a>

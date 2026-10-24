@@ -351,6 +351,31 @@ class RagDatabaseService
     }
 
     /**
+     * Remove only catalog-location embeddings (keep product tour rows).
+     */
+    public function wipeLocationDocuments(): int
+    {
+        if (! $this->hasLocationColumns()) {
+            return 0;
+        }
+
+        $docIds = DB::connection(self::CONNECTION)
+            ->table('rag_documents')
+            ->whereNotNull('location_id')
+            ->pluck('id')
+            ->all();
+        if ($docIds === []) {
+            return 0;
+        }
+
+        DB::connection(self::CONNECTION)->table('rag_chunks')->whereIn('document_id', $docIds)->delete();
+        DB::connection(self::CONNECTION)->table('rag_chunks')->whereNotNull('location_id')->delete();
+        $n = DB::connection(self::CONNECTION)->table('rag_documents')->whereNotNull('location_id')->delete();
+
+        return (int) $n;
+    }
+
+    /**
      * @param  list<int>  $locationIds
      * @return list<int>
      */

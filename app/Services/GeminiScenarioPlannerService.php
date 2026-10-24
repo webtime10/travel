@@ -20,6 +20,7 @@ class GeminiScenarioPlannerService
         private RouteSkeletonMatcher $skeletons,
         private TransferRouteFitService $transferFit,
         private ScenarioPoiContextBuilder $poiContext,
+        private DayTimeBudgetService $dayTimeBudget,
     ) {}
 
     /**
@@ -113,7 +114,8 @@ class GeminiScenarioPlannerService
         if ((! str_contains($systemTpl, 'SCENARIO QUALITY DECISION')
                 && ! str_contains($systemTpl, 'улучшает ли этот POI день'))
             || ! str_contains($systemTpl, 'Не выравнивай нагрузку между днями искусственно')
-            || ! str_contains($systemTpl, 'OLD→stops→NEW')) {
+            || ! str_contains($systemTpl, 'OLD→stops→NEW')
+            || ! str_contains($systemTpl, 'НЕ на theme=заезд')) {
             $systemTpl .= "\n\n".self::scenarioQualitySystemAddon();
         }
         // Старые промпты с жёстким «только short_stop / не бери full stay» — перекрыть мягкой логикой
@@ -172,6 +174,7 @@ class GeminiScenarioPlannerService
             }
             // overnight мог остаться пустым после правок scrub — ещё раз
             $plan = $this->backfillOvernightInPlan($plan, $pois);
+            $plan = $this->dayTimeBudget->enrichPlan($plan, $pois);
         }
 
         $debugLines = array_merge(
@@ -260,7 +263,7 @@ INVALID → никогда. VALID → оценить: улучшает ли ка
 
 MACRO HUBS: overnight = крупные базы (Ortisei/Brunico/Riva-Garda). Molveno-класс на пути к Garda = stop, не overnight.
 Stay: STAY-radius только пул. Один cluster у ночёвки. После anchor ОБЯЗАТЕЛЬНО проверь остальные POI того же STAY cluster; если есть естественный 2-й/3-й — ДОБАВЬ (норма stay = 2–3 ACTIVITY). Один POI — только если после проверки подходящих нет. Не смешивай далёкие cluster_*. Не добивай до 5ч ради цифры. Не мешай Braies (СВ) с Monte Pana/Val Gardena (ЮЗ); Marmolada не после Brunico. Brunico: Braies #116 + Misurina #117 вместе, если оба в пуле.
-Transfer: OLD→stops→NEW vs OLD→NEW и направление к NEW. POI у OLD base (Monte Pana/Alpacas в Val Gardena при переезде Ortisei→Brunico) — не corridor. Компактная Marmolada+Fedaia — stay Val Gardena ДО Brunico, не полный пакет на коротком Ortisei→Brunico. summary = фактические places. Часы не цель.
+Transfer: OLD→stops→NEW vs OLD→NEW и направление к NEW. POI у OLD base (Monte Pana/Alpacas в Val Gardena при переезде Ortisei→Brunico) — не corridor. Компактная Marmolada+#456+#652 Fedaia — ОДИН stay Val Gardena ДО Brunico; НЕ на theme=заезд; не рвать на разные дни; не полный пакет на коротком Ortisei→Brunico. summary = фактические places. Часы не цель.
 Garda-POI (Tenno/Varone/Ponale/Ledro) — только при overnight Riva-Garda.
 Выезд (theme=выезд): НЕ применять stay-density. 4 ч только если время выезда/вылета позволяет; ранний выезд → короче программа. #395 переправа Malcesine→Limone и #32 Limone — один блок: не суммировать hours дважды, если duration #395 уже включает Limone.
 
@@ -431,7 +434,7 @@ PROMPT;
     }
 
     /**
-     * Тест 3: V1 → geo → day → coverage → V2 (arbiter/rebuild).
+     * Gemini — 3 проверки: V1 → geo → day → coverage → V2 (arbiter/rebuild).
      *
      * @param  array<string, string>  $prompts  ключи: architect_system/user, geo_*, day_*, coverage_*, rebuild_*
      * @return array<string, mixed>
@@ -542,6 +545,23 @@ PROMPT;
         $stepsMs['rebuild'] = $rebuild['gemini_ms'] ?? 0;
         $raw['rebuild'] = $rebuild['raw_text'] ?? '';
 
+        // V2 после Gemini-rebuild — тот же PHP geo-scrub, что у «Gemini сценарий»
+        $planV2 = $rebuild['plan'] ?? null;
+        $scrubV2 = [];
+        if (is_array($planV2) && is_array($planV2['days'] ?? null)) {
+            $planV2 = $this->backfillPlanHoursFromCatalog($planV2, $pois);
+            $planV2 = $this->backfillOvernightInPlan($planV2, $pois);
+            $transferCtx = $this->transferFit->buildTransferContext($pois, []);
+            $scrubbed = $this->transferFit->scrubTransferStopsInPlan($planV2, $transferCtx, $pois, $query);
+            $planV2 = $scrubbed['plan'];
+            $scrubV2 = $scrubbed['removed'];
+            $planV2 = $this->backfillOvernightInPlan($planV2, $pois);
+            $planV2 = $this->dayTimeBudget->enrichPlan($planV2, $pois);
+            if ($scrubV2 !== []) {
+                Log::info("transfer_route_fit_scrub_chain_v2\n".implode("\n", $scrubV2));
+            }
+        }
+
         return [
             'ok' => (bool) ($rebuild['ok'] ?? false),
             'query' => $query,
@@ -549,7 +569,8 @@ PROMPT;
             'samples' => $samples,
             'plan_v1' => $plan,
             'audits' => $audits,
-            'plan_v2' => $rebuild['plan'] ?? null,
+            'plan_v2' => $planV2,
+            'scrub_v2' => $scrubV2,
             'steps_ms' => $stepsMs,
             'raw' => $raw,
             'message' => $rebuild['message'] ?? null,
@@ -640,7 +661,7 @@ PROMPT;
 - Не клеить valley-short у базы (Tervela) к дню high-pass (Sella/Pordoi/Marmolada).
 - Long transfer Brunico→Garda: 1–2 corridor stop из CANDIDATES (Molveno/Nardis/Tovel-класс), не пустой и не один тонкий без причины.
 - theme=выезд: лёгкий финал (Limone/#395), не тяжёлый трек Busatte.
-- Marmolada / Fedaia — stay у Val Gardena ДО переезда в Brunico; на коротком Ortisei→Brunico не ставь полный Marmolada-пакет как transfer.
+- Marmolada / Fedaia — всегда ОДИН stay-день у Val Gardena (не рвать); НЕ на theme=заезд (прибытие = лёгкая программа). На коротком Ortisei→Brunico не ставь Marmolada-пакет как transfer.
 - Transfer: OLD→stops→NEW vs прямой OLD→NEW; существенный path-detour → убери stop(s). Компактная связка из CANDIDATES с умеренным detour — можно оставить.
 - Stop в зоне OLD base без продвижения к NEW (Monte Pana/Alpacas при Ortisei→Brunico) — не transfer corridor.
 - Не возвращайся в район предыдущей базы (Val Gardena после переезда в Brunico и т.п.).

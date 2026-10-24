@@ -2,7 +2,7 @@
 
 @section('content')
 <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
-  <h4 class="mb-0">Categories</h4>
+  <h4 class="mb-0">Regions</h4>
   <div class="page-toolbar d-flex flex-wrap gap-1">
     <button
       type="button"

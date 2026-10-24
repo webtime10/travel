@@ -17,7 +17,7 @@ class CategoryController extends Controller
 {
     public function index()
     {
-        $pageTitle = 'Categories';
+        $pageTitle = 'Regions';
         $defaultLanguage = Language::admin();
         $heLanguage = Language::query()->where('code', 'he')->where('is_active', true)->first();
         $categories = Category::with(['parent.descriptions', 'descriptions'])
@@ -35,7 +35,7 @@ class CategoryController extends Controller
 
     public function create()
     {
-        $pageTitle = 'Categories';
+        $pageTitle = 'Regions';
         $languages = Language::forAdminForms();
         $defaultLanguage = Language::getDefault();
         $parentOptions = Category::treeForParentSelect($defaultLanguage, []);
@@ -91,12 +91,12 @@ class CategoryController extends Controller
             Category::rebuildPaths();
         });
 
-        return redirect()->route('admin.categories.index')->with('success', 'Категория создана');
+        return redirect()->route('admin.categories.index')->with('success', 'Region created');
     }
 
     public function edit(Category $category, CategoryVectorPipelineStore $vectorPipeline, RagDatabaseService $ragDb)
     {
-        $pageTitle = 'Categories';
+        $pageTitle = 'Regions';
         $languages = Language::forAdminForms();
         $defaultLanguage = Language::getDefault();
         $exclude = array_merge([$category->id], $category->descendantIdList());
@@ -184,7 +184,7 @@ class CategoryController extends Controller
             Category::rebuildPaths();
         });
 
-        return redirect()->route('admin.categories.index')->with('success', 'Категория обновлена');
+        return redirect()->route('admin.categories.index')->with('success', 'Region updated');
     }
 
     public function destroy(Category $category)
@@ -192,7 +192,7 @@ class CategoryController extends Controller
         $category->delete();
         Category::rebuildPaths();
 
-        return redirect()->route('admin.categories.index')->with('success', 'Категория удалена');
+        return redirect()->route('admin.categories.index')->with('success', 'Region deleted');
     }
 
     public function bulkDelete(Request $request)
@@ -203,7 +203,7 @@ class CategoryController extends Controller
             Category::rebuildPaths();
         }
 
-        return redirect()->route('admin.categories.index')->with('success', 'Выбранные категории удалены');
+        return redirect()->route('admin.categories.index')->with('success', 'Selected regions deleted');
     }
 
     public function vectorStatus(Category $category, CategoryVectorPipelineStore $pipeline, RagDatabaseService $ragDb): JsonResponse

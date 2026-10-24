@@ -14,6 +14,139 @@ class LocationRuTranslator
 
     public function __construct(private GeminiTranslator $gemini) {}
 
+    public static function looksHebrew(string $text): bool
+    {
+        return (bool) preg_match('/\p{Hebrew}/u', $text);
+    }
+
+    /**
+     * Translate only the location title/name into RU description (list column).
+     *
+     * @return array{translated: bool, name: string, skipped: bool}
+     */
+    public function translateName(Location $location): array
+    {
+        $he = Language::where('code', 'he')->first();
+        $ru = Language::where('code', 'ru')->first();
+        if (! $ru) {
+            throw new RuntimeException('Нет языка ru');
+        }
+
+        $location->loadMissing('descriptions');
+        $heName = '';
+        if ($he) {
+            $heName = trim((string) ($location->descriptions->firstWhere('language_id', $he->id)?->name ?? ''));
+        }
+        if ($heName === '') {
+            $heName = trim((string) ($location->heMeta()['title'] ?? ''));
+        }
+        if ($heName === '') {
+            $heName = trim((string) ($location->model ?? '')) ?: ('#'.$location->id);
+        }
+
+        $ruDesc = $location->descriptions->firstWhere('language_id', $ru->id);
+        $ruName = trim((string) ($ruDesc?->name ?? ''));
+        if ($ruName !== '' && ! self::looksHebrew($ruName)) {
+            return ['translated' => false, 'name' => $ruName, 'skipped' => true];
+        }
+
+        $map = $this->gemini->translateMap(['title' => $heName]);
+        $name = trim((string) ($map['title'] ?? ''));
+        if ($name === '') {
+            throw new RuntimeException('Gemini не вернул русское имя');
+        }
+
+        LocationDescription::updateOrCreate(
+            ['location_id' => $location->id, 'language_id' => $ru->id],
+            [
+                'name' => mb_substr($name, 0, 255),
+                'description' => $ruDesc?->description,
+            ]
+        );
+
+        $ruMeta = $location->ruMeta() ?? [];
+        if (is_array($ruMeta)) {
+            $ruMeta['title'] = $name;
+            $units = is_array($ruMeta['units'] ?? null) ? $ruMeta['units'] : [];
+            $units['title'] = $name;
+            $ruMeta['units'] = $units;
+            $location->meta_ru = $ruMeta;
+            $location->save();
+        }
+
+        return ['translated' => true, 'name' => $name, 'skipped' => false];
+    }
+
+    /**
+     * Keep calling translateBatch until units are done (or max rounds).
+     *
+     * @return array{done: bool, rounds: int, remaining: int, total: int}
+     */
+    public function translateAllContent(Location $location, int $batchLimit = 12, int $maxRounds = 40): array
+    {
+        $rounds = 0;
+        $remaining = 0;
+        $total = 0;
+        $done = false;
+        while ($rounds < $maxRounds) {
+            $rounds++;
+            $result = $this->translateBatch($location->refresh(), $batchLimit);
+            $remaining = (int) $result['remaining'];
+            $total = (int) $result['total'];
+            $done = (bool) $result['done'];
+            if ($done || $remaining === 0) {
+                break;
+            }
+            if ((int) $result['translated'] === 0) {
+                break;
+            }
+        }
+
+        return [
+            'done' => $done || $remaining === 0,
+            'rounds' => $rounds,
+            'remaining' => $remaining,
+            'total' => $total,
+        ];
+    }
+
+    public function needsNameRu(Location $location): bool
+    {
+        $ru = Language::where('code', 'ru')->first();
+        if (! $ru) {
+            return false;
+        }
+        $location->loadMissing('descriptions');
+        $ruName = trim((string) ($location->descriptions->firstWhere('language_id', $ru->id)?->name ?? ''));
+
+        return $ruName === '' || self::looksHebrew($ruName);
+    }
+
+    public function needsContentRu(Location $location): bool
+    {
+        $heMeta = $location->heMeta();
+        if ($heMeta === null) {
+            return $this->needsNameRu($location);
+        }
+        $units = $this->units($heMeta);
+        if ($units === []) {
+            return $this->needsNameRu($location);
+        }
+        $ruMeta = $location->ruMeta();
+        $done = is_array($ruMeta['units'] ?? null) ? $ruMeta['units'] : [];
+        $done = array_intersect_key($done, $units);
+        if (count($done) < count($units)) {
+            return true;
+        }
+        foreach ($done as $text) {
+            if (self::looksHebrew((string) $text)) {
+                return true;
+            }
+        }
+
+        return $this->needsNameRu($location);
+    }
+
     /**
      * One Gemini batch: translates up to $limit pending units into meta_ru and syncs the RU description row.
      *

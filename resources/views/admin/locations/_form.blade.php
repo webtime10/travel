@@ -5,6 +5,14 @@
   $heMetaForm = $item?->heMeta();
   $ruUnitsTotal = $heMetaForm ? count(app(\App\Services\LocationRuTranslator::class)->units($heMetaForm)) : 0;
   $ruUnitsDone = (int) data_get($item?->ruMeta(), 'stats.translated', 0);
+  $adminLangCode = strtolower((string) session('admin_lang', 'he'));
+  $activeLangIndex = 0;
+  foreach ($languages as $i => $langRow) {
+      if (strtolower((string) $langRow->code) === $adminLangCode) {
+          $activeLangIndex = $i;
+          break;
+      }
+  }
 @endphp
 
 @if($languages->isEmpty())
@@ -13,7 +21,7 @@
 <ul class="nav nav-tabs mb-3" role="tablist">
   @foreach($languages as $index => $language)
     <li class="nav-item">
-      <button type="button" class="nav-link @if($index === 0) active @endif" data-bs-toggle="tab" data-bs-target="#lpane-{{ $language->code }}" role="tab">{{ strtolower($language->code) }}</button>
+      <button type="button" class="nav-link @if($index === $activeLangIndex) active @endif" data-bs-toggle="tab" data-bs-target="#lpane-{{ $language->code }}" role="tab">{{ strtolower($language->code) }}</button>
     </li>
   @endforeach
 </ul>
@@ -25,7 +33,7 @@
       $isRu = strtolower($c) === 'ru';
       $meta = $isRu ? $item?->ruMeta() : $item?->heMeta();
     @endphp
-    <div class="tab-pane fade @if($index === 0) show active @endif" id="lpane-{{ $c }}" role="tabpanel">
+    <div class="tab-pane fade @if($index === $activeLangIndex) show active @endif" id="lpane-{{ $c }}" role="tabpanel">
       <div class="mb-3">
         <label class="form-label">Name @if($language->is_default)<span class="text-danger">*</span>@endif</label>
         <input type="text" name="name_{{ $c }}" class="form-control" dir="auto" value="{{ old('name_'.$c, $desc->name ?? '') }}" {{ $language->is_default ? 'required' : '' }}>
@@ -117,19 +125,19 @@
   </select>
 </div>
 <div class="mb-3">
-  <label class="form-label">Categories <span class="text-muted fw-normal">· область</span></label>
+  <label class="form-label">Regions</label>
   @if(empty($categories) || count($categories) === 0)
-    <p class="text-muted mb-0">No categories yet. <a href="{{ route('admin.categories.create') }}">Add category</a></p>
+    <p class="text-muted mb-0">No regions yet. <a href="{{ route('admin.categories.create') }}">Add region</a></p>
   @else
     <div class="dropdown checkbox-select" data-checkbox-select>
       <button class="form-select text-start checkbox-select-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
         <span data-checkbox-select-label>
           @if($selectedCount === 0)
-            Select categories
+            Select regions
           @elseif($selectedCount === 1)
-            1 category selected
+            1 region selected
           @else
-            {{ $selectedCount }} categories selected
+            {{ $selectedCount }} regions selected
           @endif
         </span>
       </button>

@@ -2,9 +2,10 @@
 
 @section('content')
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-  <h4 class="mb-0">Test — Gemini сценарий</h4>
+  <h4 class="mb-0">Gemini сценарий</h4>
   <div class="d-flex gap-2 align-items-center flex-wrap">
     <a href="{{ route('admin.test.index') }}" class="btn btn-sm btn-outline-secondary">← Test</a>
+    <a href="{{ route('admin.test.chain') }}" class="btn btn-sm btn-outline-secondary">Gemini — 3 проверки</a>
     <a href="{{ route('admin.test.locations') }}" class="btn btn-sm btn-outline-secondary">Поиск мест (PHP)</a>
     <span class="badge bg-label-success">В векторе: {{ (int) $indexed }}</span>
     <span class="badge bg-label-primary">Gemini keys: {{ $geminiKeys }}</span>
@@ -296,6 +297,31 @@
       + (note ? '<span class="text-muted">' + escapeHtml(note) + '</span>' : '');
   }
 
+  function renderTimeBudget(tb) {
+    if (!tb || typeof tb !== 'object' || !Array.isArray(tb.lines) || !tb.lines.length) return '';
+    const feelMap = { thin: 'warning', heavy: 'danger', light: 'info', ok: 'success' };
+    const feelCls = feelMap[tb.feel] || 'secondary';
+    const feelLabel = ({ thin: 'день тонкий', heavy: 'день плотный', light: 'лёгкий', ok: 'норм' })[tb.feel] || '';
+    let rows = tb.lines.map(function (ln) {
+      return '<div class="d-flex justify-content-between gap-2">'
+        + '<span>' + escapeHtml(ln.label || '') + '</span>'
+        + '<span class="text-nowrap">~' + escapeHtml(String(ln.hours)) + ' ч</span>'
+        + '</div>';
+    }).join('');
+    return '<div class="border rounded p-2 mt-2 bg-light small">'
+      + '<div class="d-flex justify-content-between align-items-center mb-1">'
+      + '<span class="fw-semibold">На что уходит день</span>'
+      + (feelLabel ? '<span class="badge bg-label-' + feelCls + '">' + escapeHtml(feelLabel) + '</span>' : '')
+      + '</div>'
+      + rows
+      + '<div class="d-flex justify-content-between gap-2 mt-1 pt-1 border-top fw-semibold">'
+      + '<span>Итого с дорогой / обедом / логистикой</span>'
+      + '<span class="text-nowrap">~' + escapeHtml(String(tb.total_hours)) + ' ч</span>'
+      + '</div>'
+      + (tb.note ? '<div class="text-muted mt-1" style="font-size:0.75rem;">' + escapeHtml(tb.note) + '</div>' : '')
+      + '</div>';
+  }
+
   function loadBadge(load) {
     const map = {
       ok: 'success',
@@ -306,6 +332,41 @@
     };
     const cls = map[load] || 'secondary';
     return '<span class="badge bg-label-' + cls + '">' + escapeHtml(load || '?') + '</span>';
+  }
+
+  function compactPlace(p) {
+    if (!p || typeof p !== 'object') return '';
+    const id = p.id != null ? p.id : '?';
+    const name = (p.name && String(p.name).trim()) ? String(p.name).trim() : ('#' + id);
+    return name + ' [id=' + id + ']';
+  }
+
+  function renderCompactDayLine(day, prevNightId) {
+    const date = day.date || '—';
+    const oid = day.overnight && day.overnight.id != null ? Number(day.overnight.id) : 0;
+    const theme = String(day.theme || '').toLowerCase();
+    const isTransfer = theme.indexOf('переезд') >= 0 || theme.indexOf('transfer') >= 0;
+    const places = Array.isArray(day.places) ? day.places : [];
+    const acts = [];
+    places.forEach(function (p) {
+      if (!p || typeof p !== 'object') return;
+      const pid = p.id != null ? Number(p.id) : 0;
+      const role = String(p.role || '');
+      if (role === 'base' || (oid > 0 && pid === oid)) return;
+      // hours=0 (Limone в пароме) — всё равно в списке
+      const line = compactPlace(p);
+      if (line) acts.push(line);
+    });
+    let mid = acts.length ? acts.join(', ') : '—';
+    let transferBit = '';
+    if (isTransfer && oid > 0 && prevNightId != null && oid !== prevNightId) {
+      const oname = (day.overnight && day.overnight.name) ? String(day.overnight.name).trim() : ('#' + oid);
+      transferBit = '. Переезд в ' + oname;
+    }
+    const night = day.overnight
+      ? ('. Ночёвка: ' + compactPlace(day.overnight))
+      : '';
+    return String(date) + ' — ' + mid + transferBit + night;
   }
 
   function renderRoute(plan) {
@@ -323,7 +384,21 @@
       return;
     }
 
-    let html = '';
+    let prevNight = null;
+    let compactLines = [];
+    dayList.forEach(function (day) {
+      compactLines.push(escapeHtml(renderCompactDayLine(day, prevNight)));
+      if (day && day.overnight && day.overnight.id != null) {
+        prevNight = Number(day.overnight.id);
+      }
+    });
+
+    let html = '<pre class="border rounded p-3 bg-light mb-3 small mb-0" style="white-space:pre-wrap;font-family:inherit;">'
+      + compactLines.join('\n')
+      + '</pre>';
+
+    html += '<details class="mb-2"><summary class="small text-muted" style="cursor:pointer;">Подробнее (часы / тайминг)</summary>';
+    prevNight = null;
     dayList.forEach(function (day, idx) {
       const n = idx + 1;
       const date = day.date || ('день ' + n);
@@ -343,15 +418,17 @@
         placesHtml = '<div class="small text-muted mb-2">Мест в дне нет</div>';
       }
       const total = day.total_hours != null
-        ? '<div class="small text-muted">Итого ~' + escapeHtml(String(day.total_hours)) + ' ч</div>'
+        ? '<div class="small text-muted">POI только ~' + escapeHtml(String(day.total_hours)) + ' ч</div>'
         : '';
+      const budget = renderTimeBudget(day.time_budget);
 
       html += '<div class="mb-3 pb-3' + (idx < dayList.length - 1 ? ' border-bottom' : '') + '">'
         + '<div class="fw-semibold mb-1">День ' + n + ' · ' + escapeHtml(String(date))
         + '<span class="text-muted fw-normal">' + escapeHtml(theme) + '</span></div>'
-        + summary + overnight + placesHtml + total
+        + summary + overnight + placesHtml + total + budget
         + '</div>';
     });
+    html += '</details>';
 
     if (Array.isArray(plan.notes) && plan.notes.length) {
       html += '<div class="mt-2 pt-2 border-top"><div class="fw-semibold small mb-1">Заметки</div><ul class="small mb-0 ps-3">'

@@ -31,6 +31,23 @@
     </a>
   </div>
   <div class="col-12 col-md-6">
+    <a href="{{ route('admin.test.php') }}" class="card h-100 text-decoration-none">
+      <div class="card-body">
+        <div class="d-flex align-items-start gap-3">
+          <span class="avatar avatar-md bg-label-secondary rounded">
+            <i class="bx bx-code-alt bx-md"></i>
+          </span>
+          <div>
+            <h5 class="mb-1 text-body">PHP</h5>
+            <p class="mb-0 small text-muted">
+              Слоты дней + метки → золотые дни (макет). Без Gemini.
+            </p>
+          </div>
+        </div>
+      </div>
+    </a>
+  </div>
+  <div class="col-12 col-md-6">
     <a href="{{ route('admin.test.scenario') }}" class="card h-100 text-decoration-none">
       <div class="card-body">
         <div class="d-flex align-items-start gap-3">
@@ -38,9 +55,9 @@
             <i class="bx bx-map-alt bx-md"></i>
           </span>
           <div>
-            <h5 class="mb-1 text-body">Gemini сценарий (тест 2)</h5>
+            <h5 class="mb-1 text-body">Gemini сценарий</h5>
             <p class="mb-0 small text-muted">
-              Сборка + один аудит. Средние промпты.
+              Один проход Gemini → PHP geo-scrub → один аудит.
             </p>
           </div>
         </div>
@@ -55,9 +72,9 @@
             <i class="bx bx-git-branch bx-md"></i>
           </span>
           <div>
-            <h5 class="mb-1 text-body">Тест 3 — Цепочка</h5>
+            <h5 class="mb-1 text-body">Gemini — 3 проверки</h5>
             <p class="mb-0 small text-muted">
-              V1 → география → день → покрытие → V2. Жёсткие узкие промпты.
+              Черновик → гео / день / покрытие → пересборка. Пять вызовов Gemini, три из них — проверки.
             </p>
           </div>
         </div>

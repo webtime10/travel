@@ -1,23 +1,6 @@
 @extends('admin.layouts.layout')
 
 @section('content')
-@php
-  $statuses = \App\Models\Location::FACTS_STATUSES;
-  $filterOptions = [
-    '' => 'Все',
-    'review' => 'Требует проверки',
-    'bad' => $statuses['bad']['label'],
-    'warn' => $statuses['warn']['label'],
-    'ok' => $statuses['ok']['label'],
-    'error' => $statuses['error']['label'],
-    'none' => 'Не разбиты',
-  ];
-  $countFor = function ($key) use ($statusCounts) {
-    if ($key === '') return array_sum($statusCounts->all());
-    if ($key === 'review') return (int) $statusCounts->get('bad', 0) + (int) $statusCounts->get('warn', 0) + (int) $statusCounts->get('error', 0);
-    return (int) $statusCounts->get($key, 0);
-  };
-@endphp
 <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
   <h4 class="mb-0 d-flex align-items-center gap-2">
     Locations
@@ -26,15 +9,29 @@
   <div class="page-toolbar d-flex flex-wrap gap-1">
     <button
       type="button"
-      class="btn btn-outline-primary facts-pipeline-start-btn"
-      title="Разбить все неразбитые локации на факты и проверить"
-      data-url="{{ route('admin.locations.facts-pipeline.start') }}"
-      data-cancel-url="{{ route('admin.locations.facts-pipeline.cancel') }}"
-      data-status-url="{{ route('admin.locations.facts-pipeline.status') }}"
+      class="btn btn-outline-info ru-names-pipeline-start-btn"
+      title="Перевести все названия локаций на русский (Gemini + очередь)"
+      data-url="{{ route('admin.locations.ru-names-pipeline.start') }}"
+      data-cancel-url="{{ route('admin.locations.ru-names-pipeline.cancel') }}"
+      data-status-url="{{ route('admin.locations.ru-names-pipeline.status') }}"
       data-csrf="{{ csrf_token() }}"
-      data-pending="{{ $countFor('none') }}"
+      data-pending="{{ (int) ($ruNamePending ?? 0) }}"
     >
-      <i class="bx bx-git-branch me-1"></i> Разбить все
+      <span class="fw-bold me-1">RU</span> Названия
+      <span class="badge bg-label-dark ms-1">{{ (int) ($ruNamePending ?? 0) }}</span>
+    </button>
+    <button
+      type="button"
+      class="btn btn-outline-warning ru-content-pipeline-start-btn"
+      title="Перевести содержимое локаций (тексты). Ссылки не трогаем."
+      data-url="{{ route('admin.locations.ru-content-pipeline.start') }}"
+      data-cancel-url="{{ route('admin.locations.ru-content-pipeline.cancel') }}"
+      data-status-url="{{ route('admin.locations.ru-content-pipeline.status') }}"
+      data-csrf="{{ csrf_token() }}"
+      data-pending="{{ (int) ($ruContentPending ?? 0) }}"
+    >
+      <span class="fw-bold me-1">RU</span> Содержимое
+      <span class="badge bg-label-dark ms-1">{{ (int) ($ruContentPending ?? 0) }}</span>
     </button>
     <button
       type="button"
@@ -54,19 +51,34 @@
   </div>
 </div>
 
-<div class="facts-pipeline-progress border rounded p-3 mb-3 bg-light" style="display:none;">
+<div class="ru-names-pipeline-progress border rounded p-3 mb-3 bg-light" style="display:none;">
   <div class="d-flex align-items-center justify-content-between gap-2 mb-2 flex-wrap">
-    <div class="fw-semibold facts-pipeline-label">Разбивка на факты</div>
+    <div class="fw-semibold ru-names-pipeline-label">RU · названия</div>
     <div class="d-flex align-items-center gap-2">
-      <div class="fw-bold facts-pipeline-pct">0%</div>
-      <button type="button" class="btn btn-sm btn-outline-secondary facts-pipeline-cancel-btn">Стоп</button>
+      <div class="fw-bold ru-names-pipeline-pct">0%</div>
+      <button type="button" class="btn btn-sm btn-outline-secondary ru-names-pipeline-cancel-btn">Стоп</button>
     </div>
   </div>
   <div class="progress mb-2" style="height:1rem;">
-    <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary facts-pipeline-bar" role="progressbar" style="width:0%"></div>
+    <div class="progress-bar progress-bar-striped progress-bar-animated bg-info ru-names-pipeline-bar" role="progressbar" style="width:0%"></div>
   </div>
-  <div class="small text-muted facts-pipeline-status">—</div>
-  <div class="small text-danger facts-pipeline-error mt-1" style="display:none;"></div>
+  <div class="small text-muted ru-names-pipeline-status">—</div>
+  <div class="small text-danger ru-names-pipeline-error mt-1" style="display:none;"></div>
+</div>
+
+<div class="ru-content-pipeline-progress border rounded p-3 mb-3 bg-light" style="display:none;">
+  <div class="d-flex align-items-center justify-content-between gap-2 mb-2 flex-wrap">
+    <div class="fw-semibold ru-content-pipeline-label">RU · содержимое</div>
+    <div class="d-flex align-items-center gap-2">
+      <div class="fw-bold ru-content-pipeline-pct">0%</div>
+      <button type="button" class="btn btn-sm btn-outline-secondary ru-content-pipeline-cancel-btn">Стоп</button>
+    </div>
+  </div>
+  <div class="progress mb-2" style="height:1rem;">
+    <div class="progress-bar progress-bar-striped progress-bar-animated bg-warning ru-content-pipeline-bar" role="progressbar" style="width:0%"></div>
+  </div>
+  <div class="small text-muted ru-content-pipeline-status">—</div>
+  <div class="small text-danger ru-content-pipeline-error mt-1" style="display:none;"></div>
 </div>
 
 <div class="vector-pipeline-progress border rounded p-3 mb-3 bg-light" style="display:none;">
@@ -103,9 +115,9 @@
         </select>
       </div>
       <div class="col-12 col-md-4 col-lg-2">
-        <label class="form-label mb-1">Категория (область)</label>
+        <label class="form-label mb-1">Region</label>
         <select class="form-select" name="category_id" onchange="this.form.submit()">
-          <option value="">Все области</option>
+          <option value="">All regions</option>
           @foreach($regionCategories as $opt)
             <option value="{{ $opt['id'] }}" {{ (int) $categoryId === (int) $opt['id'] ? 'selected' : '' }}>{{ $opt['label'] }}@if(isset($opt['count'])) ({{ $opt['count'] }})@endif</option>
           @endforeach
@@ -124,17 +136,9 @@
           @endforeach
         </select>
       </div>
-      <div class="col-12 col-md-4 col-lg-2">
-        <label class="form-label mb-1" for="locationsFacts">Проверка фактов</label>
-        <select class="form-select" id="locationsFacts" name="facts" onchange="this.form.submit()">
-          @foreach($filterOptions as $key => $label)
-            <option value="{{ $key }}" {{ $factsStatus === $key ? 'selected' : '' }}>{{ $label }} ({{ $countFor($key) }})</option>
-          @endforeach
-        </select>
-      </div>
       <div class="col-auto d-flex gap-1">
         <button type="submit" class="btn btn-primary">Найти</button>
-        @if($search !== '' || $factsStatus !== '' || $manufacturerId || $categoryId || $attributeId)
+        @if($search !== '' || $manufacturerId || $categoryId || $attributeId)
           <a href="{{ route('admin.locations.index') }}" class="btn btn-outline-secondary">Сброс</a>
         @endif
       </div>
@@ -151,10 +155,8 @@
           <th>Model</th>
           <th style="max-width:280px">Name</th>
           <th>Страна</th>
-          <th>Область</th>
+          <th>Region</th>
           <th>Lat / Lng</th>
-          <th>Факты</th>
-          <th>Проверка</th>
           <th>Вектор</th>
           <th>Sort</th>
           <th></th>
@@ -162,11 +164,13 @@
       </thead>
       <tbody class="table-border-bottom-0">
         @forelse($locations as $item)
-          @php $d = $item->descriptions->firstWhere('language_id', $defaultLanguage?->id) ?? $item->descriptions->first(); $st = $statuses[$item->facts_status] ?? null; @endphp
+          @php
+            $displayName = $item->nameFor($defaultLanguage);
+          @endphp
           <tr>
             <td><input type="checkbox" name="selected[]" value="{{ $item->id }}" class="form-check-input row-check" form="locationsBulkDeleteForm"></td>
             <td>{{ $item->model ?? '—' }}</td>
-            <td class="text-truncate" style="max-width:280px" dir="auto" title="{{ $d->name ?? '' }}">{{ $d->name ?? '—' }}</td>
+            <td class="text-truncate" style="max-width:280px" dir="auto" title="{{ $displayName }}">{{ $displayName }}</td>
             <td class="small">{{ $item->manufacturer?->nameFor($defaultLanguage) ?? '—' }}</td>
             <td class="small">{{ $item->categories->map(fn ($c) => optional($c->descriptions->firstWhere('language_id', $defaultLanguage?->id) ?? $c->descriptions->first())->name)->filter()->implode(', ') ?: '—' }}</td>
             <td class="small text-muted">
@@ -174,22 +178,6 @@
                 {{ $item->lat }}, {{ $item->lng }}
               @else
                 —
-              @endif
-            </td>
-            <td>
-              @if($item->facts_count)
-                <span class="badge bg-label-success">{{ $item->facts_count }}</span>
-              @else
-                <span class="text-muted">—</span>
-              @endif
-            </td>
-            <td>
-              @if($st)
-                <a href="{{ route('admin.locations.edit', $item->id) }}#facts" class="badge {{ $st['class'] }}">{{ $st['label'] }}@if($item->facts_coverage !== null) · {{ $item->facts_coverage }}%@endif</a>
-              @elseif($item->facts_split_at)
-                <span class="text-muted small">не проверено</span>
-              @else
-                <span class="text-muted">—</span>
               @endif
             </td>
             <td>
@@ -209,7 +197,7 @@
             </td>
           </tr>
         @empty
-          <tr><td colspan="11" class="text-center">No data</td></tr>
+          <tr><td colspan="9" class="text-center">No data</td></tr>
         @endforelse
       </tbody>
     </table>
@@ -237,86 +225,6 @@
 @section('scripts')
 <script>
   $('#selectAll').on('change', function () { $('.row-check').prop('checked', this.checked); });
-
-  (function () {
-    const btn = document.querySelector('.facts-pipeline-start-btn');
-    const box = document.querySelector('.facts-pipeline-progress');
-    const pctEl = document.querySelector('.facts-pipeline-pct');
-    const bar = document.querySelector('.facts-pipeline-bar');
-    const statusEl = document.querySelector('.facts-pipeline-status');
-    const errEl = document.querySelector('.facts-pipeline-error');
-    const cancelBtn = document.querySelector('.facts-pipeline-cancel-btn');
-    if (!btn) return;
-    let timer = null;
-
-    async function post(url) {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': btn.dataset.csrf, 'X-Requested-With': 'XMLHttpRequest' },
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok && res.status !== 409) throw new Error(data.message || ('HTTP ' + res.status));
-      return data;
-    }
-
-    function render(s) {
-      const total = Number(s.total || 0);
-      const done = Number(s.done || 0) + Number(s.failed || 0);
-      const pct = total > 0 ? Math.round(done / total * 100) : 0;
-      bar.style.width = pct + '%';
-      pctEl.textContent = pct + '%';
-      statusEl.textContent = 'Локаций: ' + done + ' / ' + total
-        + ' · OK ' + (s.ok || 0) + ' · посмотреть ' + (s.warn || 0) + ' · проверить ' + (s.bad || 0)
-        + (s.failed ? (' · ошибок ' + s.failed) : '')
-        + (s.current ? (' · сейчас: ' + s.current) : '');
-      if (s.last_error) { errEl.style.display = 'block'; errEl.textContent = s.last_error; } else { errEl.style.display = 'none'; }
-      if (s.state === 'running') {
-        box.style.display = 'block';
-        btn.disabled = true;
-        bar.classList.add('progress-bar-animated');
-      } else {
-        btn.disabled = false;
-        bar.classList.remove('progress-bar-animated');
-        if (timer && (s.state === 'done' || s.state === 'cancelled')) {
-          clearInterval(timer);
-          timer = null;
-          statusEl.textContent = (s.state === 'done' ? 'Готово. ' : 'Остановлено. ') + statusEl.textContent;
-        }
-      }
-    }
-
-    async function poll() {
-      const res = await fetch(btn.dataset.statusUrl, { headers: { 'Accept': 'application/json' } });
-      const s = await res.json().catch(() => ({}));
-      render(s);
-      return s;
-    }
-
-    function startPolling() {
-      if (timer) clearInterval(timer);
-      poll();
-      timer = setInterval(poll, 4000);
-    }
-
-    btn.addEventListener('click', async function () {
-      const pending = Number(btn.dataset.pending || 0);
-      if (!confirm('Разбить и проверить ' + pending + ' неразбитых локаций? Нужен запущенный worker: php artisan queue:work')) return;
-      try {
-        const data = await post(btn.dataset.url);
-        if (!data.started) { alert(data.message || 'Нечего разбивать'); return; }
-        startPolling();
-      } catch (e) {
-        alert(e.message || String(e));
-      }
-    });
-
-    cancelBtn.addEventListener('click', async function () {
-      if (!confirm('Остановить разбивку?')) return;
-      try { await post(btn.dataset.cancelUrl); await poll(); } catch (e) { alert(e.message || String(e)); }
-    });
-
-    poll().then(function (s) { if (s.state === 'running') startPolling(); });
-  })();
 
   (function () {
     const btn = document.querySelector('.vector-pipeline-start-btn');
@@ -398,5 +306,108 @@
 
     poll().then(function (s) { if (s.state === 'running') startPolling(); });
   })();
+
+  function bindRuPipeline(opts) {
+    const btn = document.querySelector(opts.btn);
+    const box = document.querySelector(opts.box);
+    const pctEl = document.querySelector(opts.pct);
+    const bar = document.querySelector(opts.bar);
+    const statusEl = document.querySelector(opts.status);
+    const errEl = document.querySelector(opts.err);
+    const cancelBtn = document.querySelector(opts.cancel);
+    if (!btn) return;
+    let timer = null;
+
+    async function post(url) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': btn.dataset.csrf, 'X-Requested-With': 'XMLHttpRequest' },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok && res.status !== 409) throw new Error(data.message || ('HTTP ' + res.status));
+      return data;
+    }
+
+    function render(s) {
+      const total = Number(s.total || 0);
+      const done = Number(s.done || 0) + Number(s.failed || 0);
+      const pct = total > 0 ? Math.round(done / total * 100) : 0;
+      bar.style.width = pct + '%';
+      pctEl.textContent = pct + '%';
+      statusEl.textContent = 'Локаций: ' + done + ' / ' + total
+        + ' · OK ' + (s.ok || 0)
+        + (s.failed ? (' · ошибок ' + s.failed) : '')
+        + (s.need != null ? (' · ещё нужно ~' + s.need) : '')
+        + (s.current ? (' · сейчас: ' + s.current) : '');
+      if (s.last_error) { errEl.style.display = 'block'; errEl.textContent = s.last_error; } else { errEl.style.display = 'none'; }
+      if (s.state === 'running') {
+        box.style.display = 'block';
+        btn.disabled = true;
+        bar.classList.add('progress-bar-animated');
+      } else {
+        btn.disabled = false;
+        bar.classList.remove('progress-bar-animated');
+        if (timer && (s.state === 'done' || s.state === 'cancelled')) {
+          clearInterval(timer);
+          timer = null;
+          statusEl.textContent = (s.state === 'done' ? 'Готово. ' : 'Остановлено. ') + statusEl.textContent;
+        }
+      }
+    }
+
+    async function poll() {
+      const res = await fetch(btn.dataset.statusUrl, { headers: { 'Accept': 'application/json' } });
+      const s = await res.json().catch(() => ({}));
+      render(s);
+      return s;
+    }
+
+    function startPolling() {
+      if (timer) clearInterval(timer);
+      poll();
+      timer = setInterval(poll, 3000);
+    }
+
+    btn.addEventListener('click', async function () {
+      const pending = Number(btn.dataset.pending || 0);
+      if (!confirm(opts.confirm.replace('{n}', String(pending)))) return;
+      try {
+        const data = await post(btn.dataset.url);
+        if (!data.started) { alert(data.message || 'Нечего переводить'); return; }
+        startPolling();
+      } catch (e) {
+        alert(e.message || String(e));
+      }
+    });
+
+    cancelBtn.addEventListener('click', async function () {
+      if (!confirm('Остановить перевод?')) return;
+      try { await post(btn.dataset.cancelUrl); await poll(); } catch (e) { alert(e.message || String(e)); }
+    });
+
+    poll().then(function (s) { if (s.state === 'running') startPolling(); });
+  }
+
+  bindRuPipeline({
+    btn: '.ru-names-pipeline-start-btn',
+    box: '.ru-names-pipeline-progress',
+    pct: '.ru-names-pipeline-pct',
+    bar: '.ru-names-pipeline-bar',
+    status: '.ru-names-pipeline-status',
+    err: '.ru-names-pipeline-error',
+    cancel: '.ru-names-pipeline-cancel-btn',
+    confirm: 'Перевести названия {n} локаций на русский? Нужен worker: php artisan queue:work',
+  });
+
+  bindRuPipeline({
+    btn: '.ru-content-pipeline-start-btn',
+    box: '.ru-content-pipeline-progress',
+    pct: '.ru-content-pipeline-pct',
+    bar: '.ru-content-pipeline-bar',
+    status: '.ru-content-pipeline-status',
+    err: '.ru-content-pipeline-error',
+    cancel: '.ru-content-pipeline-cancel-btn',
+    confirm: 'Перевести содержимое {n} локаций (тексты/часы/факты, ссылки без изменений)? Долго. Нужен worker: php artisan queue:work',
+  });
 </script>
 @endsection

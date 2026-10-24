@@ -9,7 +9,7 @@ use Illuminate\Support\Facades\DB;
 use RuntimeException;
 
 /**
- * Index one catalog location (title + facts) into PostgreSQL RAG.
+ * Index one catalog location (title + description Word text + facts) into PostgreSQL RAG.
  */
 class RagLocationIndexer
 {
@@ -132,10 +132,11 @@ class RagLocationIndexer
     public function locationToChunks(Location $location): array
     {
         $out = [];
+        $block = 0;
         $header = $this->headerText($location);
         if ($header !== '') {
             $out[] = [
-                'block_index' => 0,
+                'block_index' => $block++,
                 'block_type' => 'header',
                 'content' => $this->cap($header),
                 'meta' => [
@@ -147,14 +148,44 @@ class RagLocationIndexer
             ];
         }
 
-        foreach ($location->facts as $i => $fact) {
+        foreach ($this->descriptionChunks($location, 'he') as $piece) {
+            $out[] = [
+                'block_index' => $block++,
+                'block_type' => 'description',
+                'content' => $this->cap($piece),
+                'meta' => [
+                    'location_id' => $location->id,
+                    'group' => 'description',
+                    'lang' => 'he',
+                ],
+            ];
+        }
+
+        $heDesc = $this->descriptionByCode($location, 'he');
+        $ruDesc = $this->descriptionByCode($location, 'ru');
+        if ($ruDesc !== '' && $ruDesc !== $heDesc) {
+            foreach ($this->splitPlainText($ruDesc) as $piece) {
+                $out[] = [
+                    'block_index' => $block++,
+                    'block_type' => 'description_ru',
+                    'content' => $this->cap($piece),
+                    'meta' => [
+                        'location_id' => $location->id,
+                        'group' => 'description',
+                        'lang' => 'ru',
+                    ],
+                ];
+            }
+        }
+
+        foreach ($location->facts as $fact) {
             $text = $this->factText($fact);
             if ($text === '') {
                 continue;
             }
             $group = (string) ($fact->group ?: 'other');
             $out[] = [
-                'block_index' => $i + 1,
+                'block_index' => $block++,
                 'block_type' => $group,
                 'content' => $this->cap($text),
                 'meta' => [
@@ -166,6 +197,67 @@ class RagLocationIndexer
         }
 
         return $out;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function descriptionChunks(Location $location, string $code): array
+    {
+        $text = $this->descriptionByCode($location, $code);
+
+        return $text === '' ? [] : $this->splitPlainText($text);
+    }
+
+    private function descriptionByCode(Location $location, string $code): string
+    {
+        $langId = $this->langId($code);
+        $d = $langId
+            ? $location->descriptions->firstWhere('language_id', $langId)
+            : null;
+
+        return trim((string) ($d->description ?? ''));
+    }
+
+    /**
+     * Split long Word plain text into embeddable pieces (~1500 chars).
+     *
+     * @return list<string>
+     */
+    private function splitPlainText(string $text, int $max = 1500): array
+    {
+        $text = trim(preg_replace("/\n{3,}/u", "\n\n", $text) ?? $text);
+        if ($text === '') {
+            return [];
+        }
+        if (mb_strlen($text) <= $max) {
+            return [$text];
+        }
+
+        $chunks = [];
+        $buf = '';
+        foreach (preg_split('/\r\n|\r|\n/u', $text) ?: [] as $line) {
+            while (mb_strlen($line) > $max) {
+                if (trim($buf) !== '') {
+                    $chunks[] = $buf;
+                    $buf = '';
+                }
+                $chunks[] = mb_substr($line, 0, $max);
+                $line = mb_substr($line, $max);
+            }
+            $candidate = $buf === '' ? $line : $buf."\n".$line;
+            if (mb_strlen($candidate) > $max && trim($buf) !== '') {
+                $chunks[] = $buf;
+                $buf = $line;
+            } else {
+                $buf = $candidate;
+            }
+        }
+        if (trim($buf) !== '') {
+            $chunks[] = $buf;
+        }
+
+        return array_values(array_filter($chunks, fn ($c) => trim($c) !== ''));
     }
 
     private function headerText(Location $location): string

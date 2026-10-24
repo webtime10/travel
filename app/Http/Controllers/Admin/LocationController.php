@@ -16,10 +16,13 @@ use App\Models\LocationFact;
 use App\Models\LocationFactDescription;
 use App\Jobs\IndexLocationJob;
 use App\Jobs\SplitLocationFactsJob;
+use App\Jobs\TranslateLocationContentRuJob;
+use App\Jobs\TranslateLocationNameRuJob;
 use App\Services\LocationFactChecker;
 use App\Services\LocationFactExtractor;
 use App\Services\LocationFactsPipelineStore;
 use App\Services\LocationFactRuTranslator;
+use App\Services\LocationRuPipelineStore;
 use App\Services\LocationVectorPipelineStore;
 use App\Services\RagDatabaseService;
 use App\Services\RagLocationIndexer;
@@ -40,13 +43,15 @@ class LocationController extends Controller
         $manufacturerId = (int) $request->input('manufacturer_id', 0);
         $categoryId = (int) $request->input('category_id', 0);
         $attributeId = (int) $request->input('attribute_id', 0);
+        $areaId = (int) $request->input('area_id', 0);
 
         $query = Location::query()
-            ->select(['locations.id', 'locations.model', 'locations.manufacturer_id', 'locations.lat', 'locations.lng', 'locations.sort_order', 'locations.status', 'locations.facts_status', 'locations.facts_coverage', 'locations.facts_split_at', 'locations.created_at', 'locations.updated_at'])
+            ->select(['locations.id', 'locations.model', 'locations.manufacturer_id', 'locations.area_id', 'locations.lat', 'locations.lng', 'locations.sort_order', 'locations.status', 'locations.facts_status', 'locations.facts_coverage', 'locations.facts_split_at', 'locations.created_at', 'locations.updated_at'])
             ->with([
                 'descriptions',
                 'categories.descriptions',
                 'manufacturer.descriptions',
+                'area.descriptions',
             ])
             ->withCount('facts');
 
@@ -82,6 +87,11 @@ class LocationController extends Controller
         if ($attributeId > 0) {
             $query->whereHas('attributeValues', fn ($q) => $q->where('attribute_id', $attributeId));
         }
+        if ($areaId > 0) {
+            $query->where('area_id', $areaId);
+        } elseif ($request->input('area_id') === 'none') {
+            $query->whereNull('area_id');
+        }
 
         $locations = $query
             ->orderBy('sort_order')
@@ -112,6 +122,16 @@ class LocationController extends Controller
             ->orderBy('attribute_group_id')
             ->orderBy('sort_order')
             ->get();
+        $filterAreas = Area::with('descriptions')
+            ->withCount('locations')
+            ->orderBy('sort_order')
+            ->orderBy('id')
+            ->get();
+        $areaNoneCount = Location::query()->whereNull('area_id')->count();
+        $areaFilterValue = $request->input('area_id', '');
+
+        $ruNamePending = $this->pendingRuNameCount();
+        $ruContentPending = $this->pendingRuContentCount();
 
         return view('admin.locations.index', compact(
             'locations',
@@ -126,6 +146,12 @@ class LocationController extends Controller
             'categoryId',
             'filterAttributes',
             'attributeId',
+            'filterAreas',
+            'areaId',
+            'areaFilterValue',
+            'areaNoneCount',
+            'ruNamePending',
+            'ruContentPending',
             'vectorIndexed',
             'vectorIndexedCount',
         ));
@@ -161,7 +187,7 @@ class LocationController extends Controller
         $rows = collect();
         $rows->push([
             'id' => $parent->id,
-            'label' => $parent->descriptions->firstWhere('language_id', $lang?->id)?->name ?? 'Области',
+            'label' => $parent->descriptions->firstWhere('language_id', $lang?->id)?->name ?? 'Regions',
             'count' => $children->sum('locations_count'),
         ]);
         foreach ($children as $child) {
@@ -422,6 +448,88 @@ class LocationController extends Controller
         return response()->json(['ok' => true, 'message' => 'Остановлено']);
     }
 
+    public function ruNamesPipelineStatus()
+    {
+        $pipeline = LocationRuPipelineStore::names();
+
+        return response()->json($pipeline->status() + [
+            'need' => $this->pendingRuNameCount(),
+        ]);
+    }
+
+    public function ruNamesPipelineStart()
+    {
+        $pipeline = LocationRuPipelineStore::names();
+        if ($pipeline->running()) {
+            return response()->json(['ok' => false, 'message' => 'Перевод названий уже идёт'], 409);
+        }
+
+        $ids = $this->pendingRuNameIds();
+        if ($ids === []) {
+            return response()->json(['ok' => true, 'started' => 0, 'message' => 'Все названия уже на русском']);
+        }
+
+        $pipeline->begin($ids);
+        $first = $pipeline->shift();
+        if ($first !== null) {
+            TranslateLocationNameRuJob::dispatch($first);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'started' => count($ids),
+            'message' => 'Перевод названий: '.count($ids).' локаций. Нужен queue:work',
+        ]);
+    }
+
+    public function ruNamesPipelineCancel()
+    {
+        LocationRuPipelineStore::names()->cancel();
+
+        return response()->json(['ok' => true, 'message' => 'Остановлено']);
+    }
+
+    public function ruContentPipelineStatus()
+    {
+        $pipeline = LocationRuPipelineStore::content();
+
+        return response()->json($pipeline->status() + [
+            'need' => $this->pendingRuContentCount(),
+        ]);
+    }
+
+    public function ruContentPipelineStart()
+    {
+        $pipeline = LocationRuPipelineStore::content();
+        if ($pipeline->running()) {
+            return response()->json(['ok' => false, 'message' => 'Перевод содержимого уже идёт'], 409);
+        }
+
+        $ids = $this->pendingRuContentIds();
+        if ($ids === []) {
+            return response()->json(['ok' => true, 'started' => 0, 'message' => 'Всё содержимое уже на русском']);
+        }
+
+        $pipeline->begin($ids);
+        $first = $pipeline->shift();
+        if ($first !== null) {
+            TranslateLocationContentRuJob::dispatch($first);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'started' => count($ids),
+            'message' => 'Перевод содержимого: '.count($ids).' локаций. Нужен queue:work',
+        ]);
+    }
+
+    public function ruContentPipelineCancel()
+    {
+        LocationRuPipelineStore::content()->cancel();
+
+        return response()->json(['ok' => true, 'message' => 'Остановлено']);
+    }
+
     public function indexVector(Location $location, RagLocationIndexer $indexer)
     {
         @set_time_limit(600);
@@ -447,6 +555,80 @@ class LocationController extends Controller
         $indexed = array_fill_keys($ragDb->indexedLocationIds($ids), true);
 
         return array_values(array_filter($ids, fn (int $id) => ! isset($indexed[$id])));
+    }
+
+    private function pendingRuNameCount(): int
+    {
+        return count($this->pendingRuNameIds());
+    }
+
+    private function pendingRuContentCount(): int
+    {
+        return count($this->pendingRuContentIds());
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function pendingRuNameIds(): array
+    {
+        $translator = app(LocationRuTranslator::class);
+        $ids = [];
+        Location::query()->with('descriptions')->orderBy('id')->chunkById(100, function ($chunk) use ($translator, &$ids) {
+            foreach ($chunk as $location) {
+                if ($translator->needsNameRu($location)) {
+                    $ids[] = (int) $location->id;
+                }
+            }
+        });
+
+        return $ids;
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function pendingRuContentIds(): array
+    {
+        $translator = app(LocationRuTranslator::class);
+        $ids = [];
+        Location::query()->with(['descriptions', 'facts.descriptions'])->orderBy('id')->chunkById(50, function ($chunk) use ($translator, &$ids) {
+            foreach ($chunk as $location) {
+                if ($translator->needsContentRu($location) || $this->needsFactsRu($location)) {
+                    $ids[] = (int) $location->id;
+                }
+            }
+        });
+
+        return $ids;
+    }
+
+    private function needsFactsRu(Location $location): bool
+    {
+        $he = Language::where('code', 'he')->first();
+        $ru = Language::where('code', 'ru')->first();
+        if (! $he || ! $ru || $location->facts->isEmpty()) {
+            return false;
+        }
+        foreach ($location->facts as $fact) {
+            $heD = $fact->descriptions->firstWhere('language_id', $he->id);
+            if (! $heD) {
+                continue;
+            }
+            $ruD = $fact->descriptions->firstWhere('language_id', $ru->id);
+            if (! $ruD) {
+                return true;
+            }
+            foreach (['name', 'text', 'hours', 'type'] as $field) {
+                $src = trim((string) ($heD->{$field} ?? ''));
+                $dst = trim((string) ($ruD->{$field} ?? ''));
+                if ($src !== '' && ($dst === '' || LocationRuTranslator::looksHebrew($dst))) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     public function factStore(Request $request, Location $location)

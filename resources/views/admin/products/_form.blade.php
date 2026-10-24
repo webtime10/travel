@@ -211,19 +211,19 @@
 @endif
 
 <div class="mb-3">
-  <label class="form-label">Categories</label>
+  <label class="form-label">Regions</label>
   @if(empty($categories))
-    <p class="text-muted mb-0">No categories yet. <a href="{{ route('admin.categories.create') }}">Add category</a></p>
+    <p class="text-muted mb-0">No regions yet. <a href="{{ route('admin.categories.create') }}">Add region</a></p>
   @else
     <div class="dropdown checkbox-select" data-checkbox-select>
       <button class="form-select text-start checkbox-select-toggle" type="button" data-bs-toggle="dropdown" data-bs-auto-close="outside" aria-expanded="false">
         <span data-checkbox-select-label>
           @if($selectedCount === 0)
-            Select categories
+            Select regions
           @elseif($selectedCount === 1)
-            1 category selected
+            1 region selected
           @else
-            {{ $selectedCount }} categories selected
+            {{ $selectedCount }} regions selected
           @endif
         </span>
       </button>

@@ -186,7 +186,7 @@
         <li class="menu-item {{ request()->routeIs('admin.categories.*') ? 'active' : '' }}">
           <a href="{{ route('admin.categories.index') }}" class="menu-link">
             <i class="menu-icon tf-icons bx bx-folder"></i>
-            <div>Categories</div>
+            <div>Regions</div>
           </a>
         </li>
         <li class="menu-item {{ request()->routeIs('admin.products.*') ? 'active' : '' }}">
@@ -211,6 +211,18 @@
           <a href="{{ route('admin.route-skeletons.index') }}" class="menu-link">
             <i class="menu-icon tf-icons bx bx-route"></i>
             <div>Short routes</div>
+          </a>
+        </li>
+        <li class="menu-item {{ request()->routeIs('admin.golden-days.*') ? 'active' : '' }}">
+          <a href="{{ route('admin.golden-days.index') }}" class="menu-link">
+            <i class="menu-icon tf-icons bx bx-calendar-star"></i>
+            <div>Golden days</div>
+          </a>
+        </li>
+        <li class="menu-item {{ request()->routeIs('admin.golden-labels.*') ? 'active' : '' }}">
+          <a href="{{ route('admin.golden-labels.index') }}" class="menu-link">
+            <i class="menu-icon tf-icons bx bx-purchase-tag"></i>
+            <div>Golden labels</div>
           </a>
         </li>
         <li class="menu-item {{ request()->routeIs('admin.manufacturers.*') ? 'active' : '' }}">
@@ -253,6 +265,22 @@
                 <div>Поиск мест</div>
               </a>
             </li>
+            <li class="menu-item {{ request()->routeIs('admin.test.php') && !request()->routeIs('admin.test.php.*') ? 'active' : '' }} {{ request()->routeIs('admin.test.php.*') ? 'active open' : '' }}">
+              <a href="javascript:void(0);" class="menu-link menu-toggle">
+                <div>PHP</div>
+              </a>
+              <ul class="menu-sub">
+                <li class="menu-item {{ request()->routeIs('admin.test.php') && !request()->routeIs('admin.test.php.*') ? 'active' : '' }}">
+                  <a href="{{ route('admin.test.php') }}" class="menu-link"><div>Слоты дней</div></a>
+                </li>
+                <li class="menu-item {{ request()->routeIs('admin.test.php.map') ? 'active' : '' }}">
+                  <a href="{{ route('admin.test.php.map') }}" class="menu-link"><div>День · карта</div></a>
+                </li>
+                <li class="menu-item {{ request()->routeIs('admin.test.php.gemini') ? 'active' : '' }}">
+                  <a href="{{ route('admin.test.php.gemini') }}" class="menu-link"><div>День · Gemini</div></a>
+                </li>
+              </ul>
+            </li>
             <li class="menu-item {{ request()->routeIs('admin.test.scenario*') ? 'active' : '' }}">
               <a href="{{ route('admin.test.scenario') }}" class="menu-link">
                 <div>Gemini сценарий</div>
@@ -260,7 +288,7 @@
             </li>
             <li class="menu-item {{ request()->routeIs('admin.test.chain*') ? 'active' : '' }}">
               <a href="{{ route('admin.test.chain') }}" class="menu-link">
-                <div>Тест 3</div>
+                <div>Gemini — 3 проверки</div>
               </a>
             </li>
           </ul>
@@ -360,9 +388,9 @@
     function refresh() {
       var n = wrap.querySelectorAll('input[type="checkbox"]:checked').length;
       if (!label) return;
-      if (n === 0) label.textContent = 'Select categories';
-      else if (n === 1) label.textContent = '1 category selected';
-      else label.textContent = n + ' categories selected';
+      if (n === 0) label.textContent = 'Select regions';
+      else if (n === 1) label.textContent = '1 region selected';
+      else label.textContent = n + ' regions selected';
     }
     boxes.forEach(function (box) {
       box.addEventListener('change', refresh);

@@ -2,18 +2,23 @@
 
 @section('content')
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-  <h4 class="mb-0">Test 3 — Цепочка</h4>
+  <h4 class="mb-0">Gemini — 3 проверки</h4>
   <div class="d-flex gap-2 align-items-center flex-wrap">
     <a href="{{ route('admin.test.index') }}" class="btn btn-sm btn-outline-secondary">← Test</a>
-    <a href="{{ route('admin.test.scenario') }}" class="btn btn-sm btn-outline-secondary">Тест 2</a>
+    <a href="{{ route('admin.test.scenario') }}" class="btn btn-sm btn-outline-secondary">Gemini сценарий</a>
     <span class="badge bg-label-success">В векторе: {{ (int) $indexed }}</span>
     <span class="badge bg-label-primary">Gemini keys: {{ $geminiKeys }}</span>
   </div>
 </div>
 
 <div class="alert alert-warning mb-4">
-  <div class="fw-semibold mb-1">V1 → География → День → Покрытие → V2</div>
-  <p class="mb-0 small">Пять вызовов Gemini. Жёсткие узкие промпты. Тест 2 не трогаем — сравниваем рядом.</p>
+  <div class="fw-semibold mb-1">Сначала проверки, потом пересборка</div>
+  <ol class="mb-0 small ps-3">
+    <li>Черновик (V1) + PHP geo-scrub</li>
+    <li>Три проверки: география → день/нагрузка → покрытие</li>
+    <li>Пересборка (V2) по findings + снова PHP geo-scrub</li>
+  </ol>
+  <p class="mb-0 small mt-2">Пять вызовов Gemini. Рядом — «Gemini сценарий» (один проход + один аудит).</p>
 </div>
 
 <div class="card mb-4">
@@ -46,8 +51,8 @@
       <div class="d-flex gap-3">
         <div class="spinner-border text-primary flex-shrink-0"></div>
         <div>
-          <div class="fw-semibold">Цепочка Gemini…</div>
-          <div class="small" id="chProgressDetail">V1 → geo → day → coverage → V2 (может занять несколько минут)</div>
+          <div class="fw-semibold">Gemini — 3 проверки…</div>
+          <div class="small" id="chProgressDetail">черновик → гео → день → покрытие → пересборка (несколько минут)</div>
         </div>
       </div>
     </div>
@@ -85,7 +90,7 @@
 <div class="card">
   <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2 py-3">
     <div>
-      <span class="fw-semibold">Промпты Test 3</span>
+      <span class="fw-semibold">Промпты — Gemini 3 проверки</span>
       <div class="small text-muted">@{{QUERY}} @{{DAYS}} @{{PLAN}} @{{POIS}} @{{SAMPLES}} @{{FINDINGS}}</div>
     </div>
     <div class="d-flex gap-2 align-items-center">
@@ -165,6 +170,29 @@
       + '</span>';
   }
 
+  function renderTimeBudget(tb) {
+    if (!tb || typeof tb !== 'object' || !Array.isArray(tb.lines) || !tb.lines.length) return '';
+    const feelMap = { thin: 'warning', heavy: 'danger', light: 'info', ok: 'success' };
+    const feelCls = feelMap[tb.feel] || 'secondary';
+    const feelLabel = ({ thin: 'день тонкий', heavy: 'день плотный', light: 'лёгкий', ok: 'норм' })[tb.feel] || '';
+    let rows = tb.lines.map(function (ln) {
+      return '<div class="d-flex justify-content-between gap-2">'
+        + '<span>' + escapeHtml(ln.label || '') + '</span>'
+        + '<span class="text-nowrap">~' + escapeHtml(String(ln.hours)) + ' ч</span>'
+        + '</div>';
+    }).join('');
+    return '<div class="border rounded p-2 mt-2 bg-light" style="font-size:0.8rem;">'
+      + '<div class="d-flex justify-content-between align-items-center mb-1">'
+      + '<span class="fw-semibold">На что уходит день</span>'
+      + (feelLabel ? '<span class="badge bg-label-' + feelCls + '">' + escapeHtml(feelLabel) + '</span>' : '')
+      + '</div>'
+      + rows
+      + '<div class="d-flex justify-content-between gap-2 mt-1 pt-1 border-top fw-semibold">'
+      + '<span>Итого с дорогой / обедом</span>'
+      + '<span>~' + escapeHtml(String(tb.total_hours)) + ' ч</span>'
+      + '</div></div>';
+  }
+
   function renderRoute(plan, el) {
     if (!plan || !Array.isArray(plan.days)) {
       el.innerHTML = '<div class="text-muted small">нет плана</div>';
@@ -184,6 +212,10 @@
           return '<li>' + placeLine(p) + '</li>';
         }).join('') + '</ul>';
       }
+      if (day.total_hours != null) {
+        html += '<div class="small text-muted">POI только ~' + escapeHtml(String(day.total_hours)) + ' ч</div>';
+      }
+      html += renderTimeBudget(day.time_budget);
       html += '</div>';
     });
     el.innerHTML = html;
@@ -239,10 +271,16 @@
 
       const ms = data.steps_ms || {};
       const parts = Object.keys(ms).map(function (k) { return k + ' ' + ms[k] + 'мс'; });
+      const scrub = Array.isArray(data.scrub_v2) ? data.scrub_v2 : [];
       meta.style.display = 'block';
       meta.textContent = 'POI ' + ((data.pois || []).length)
         + ' · образцы ' + ((data.samples || []).length)
-        + (parts.length ? ' · ' + parts.join(' · ') : '');
+        + (parts.length ? ' · ' + parts.join(' · ') : '')
+        + (scrub.length ? ' · PHP scrub V2: ' + scrub.length + ' правок' : '');
+      if (scrub.length) {
+        meta.textContent += '\n' + scrub.join('\n');
+        meta.style.whiteSpace = 'pre-wrap';
+      }
 
       if (!res.ok || data.ok === false) {
         showError(data.message || ('HTTP ' + res.status));
