@@ -1,0 +1,11 @@
+{
+  "locations_count": 804,
+  "documents_count": 1209,
+  "text_ok": 1209,
+  "text_fail": 0,
+  "missing_files": 1,
+  "files": [
+    "locations.json",
+    "locations_by_id.json"
+  ]
+}
