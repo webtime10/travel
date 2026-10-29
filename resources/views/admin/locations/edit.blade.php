@@ -18,4 +18,18 @@
   </div>
 </div>
 @include('admin.locations._facts')
+@include('admin.locations._flexible')
+<script>
+  (function () {
+    const root = document.getElementById('flexible-blocks');
+    if (!root) return;
+    const bind = function () {
+      root.querySelectorAll('[name]').forEach(function (el) {
+        el.setAttribute('form', 'locationForm');
+      });
+    };
+    bind();
+    new MutationObserver(bind).observe(root, { childList: true, subtree: true });
+  })();
+</script>
 @endsection

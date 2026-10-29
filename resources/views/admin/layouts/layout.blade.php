@@ -195,11 +195,28 @@
             <div>Products</div>
           </a>
         </li>
-        <li class="menu-item {{ request()->routeIs('admin.locations.*') ? 'active' : '' }}">
-          <a href="{{ route('admin.locations.index') }}" class="menu-link">
+        @php
+          $locMenuOpen = request()->routeIs('admin.locations.*');
+          $locCountry = (int) request('manufacturer_id', 0);
+          $italyManufacturerId = \App\Models\Manufacturer::query()->where('code', 'IT')->value('id');
+          $ukraineManufacturerId = \App\Models\Manufacturer::query()->where('code', 'UA')->value('id');
+        @endphp
+        <li class="menu-item {{ $locMenuOpen ? 'active open' : '' }}">
+          <a href="javascript:void(0);" class="menu-link menu-toggle">
             <i class="menu-icon tf-icons bx bx-map-pin"></i>
             <div>Locations</div>
           </a>
+          <ul class="menu-sub">
+            <li class="menu-item {{ $locMenuOpen && $locCountry === 0 ? 'active' : '' }}">
+              <a href="{{ route('admin.locations.index') }}" class="menu-link"><div>Все</div></a>
+            </li>
+            <li class="menu-item {{ $locMenuOpen && $italyManufacturerId && $locCountry === (int) $italyManufacturerId ? 'active' : '' }}">
+              <a href="{{ route('admin.locations.index', ['manufacturer_id' => $italyManufacturerId]) }}" class="menu-link"><div>Italy</div></a>
+            </li>
+            <li class="menu-item {{ $locMenuOpen && $ukraineManufacturerId && $locCountry === (int) $ukraineManufacturerId ? 'active' : '' }}">
+              <a href="{{ route('admin.locations.index', ['manufacturer_id' => $ukraineManufacturerId]) }}" class="menu-link"><div>Ukraine</div></a>
+            </li>
+          </ul>
         </li>
         <li class="menu-item {{ request()->routeIs('admin.areas.*') ? 'active' : '' }}">
           <a href="{{ route('admin.areas.index') }}" class="menu-link">
@@ -213,17 +230,53 @@
             <div>Short routes</div>
           </a>
         </li>
-        <li class="menu-item {{ request()->routeIs('admin.golden-days.*') ? 'active' : '' }}">
-          <a href="{{ route('admin.golden-days.index') }}" class="menu-link">
+        <li class="menu-item {{ request()->routeIs('admin.saved-routes.*') ? 'active' : '' }}">
+          <a href="{{ route('admin.saved-routes.index') }}" class="menu-link">
+            <i class="menu-icon tf-icons bx bx-map"></i>
+            <div>Маршруты</div>
+          </a>
+        </li>
+        @php
+          $gdOpen = request()->routeIs('admin.golden-days.*');
+          $gdCountry = strtoupper((string) request('country', ''));
+        @endphp
+        <li class="menu-item {{ $gdOpen ? 'active open' : '' }}">
+          <a href="javascript:void(0);" class="menu-link menu-toggle">
             <i class="menu-icon tf-icons bx bx-calendar-star"></i>
             <div>Golden days</div>
           </a>
+          <ul class="menu-sub">
+            <li class="menu-item {{ $gdOpen && $gdCountry === 'UA' ? 'active' : '' }}">
+              <a href="{{ route('admin.golden-days.index', ['country' => 'UA']) }}" class="menu-link"><div>Ukraine</div></a>
+            </li>
+            <li class="menu-item {{ $gdOpen && $gdCountry === 'IT' ? 'active' : '' }}">
+              <a href="{{ route('admin.golden-days.index', ['country' => 'IT']) }}" class="menu-link"><div>Italy</div></a>
+            </li>
+            <li class="menu-item {{ $gdOpen && ($gdCountry === 'ALL' || ($gdOpen && $gdCountry === '')) ? 'active' : '' }}">
+              <a href="{{ route('admin.golden-days.index', ['country' => 'ALL']) }}" class="menu-link"><div>Все</div></a>
+            </li>
+          </ul>
         </li>
-        <li class="menu-item {{ request()->routeIs('admin.golden-labels.*') ? 'active' : '' }}">
-          <a href="{{ route('admin.golden-labels.index') }}" class="menu-link">
+        @php
+          $glOpen = request()->routeIs('admin.golden-labels.*');
+          $glCountry = strtoupper((string) request('country', ''));
+        @endphp
+        <li class="menu-item {{ $glOpen ? 'active open' : '' }}">
+          <a href="javascript:void(0);" class="menu-link menu-toggle">
             <i class="menu-icon tf-icons bx bx-purchase-tag"></i>
             <div>Golden labels</div>
           </a>
+          <ul class="menu-sub">
+            <li class="menu-item {{ $glOpen && $glCountry === 'UA' ? 'active' : '' }}">
+              <a href="{{ route('admin.golden-labels.index', ['country' => 'UA']) }}" class="menu-link"><div>Ukraine</div></a>
+            </li>
+            <li class="menu-item {{ $glOpen && $glCountry === 'IT' ? 'active' : '' }}">
+              <a href="{{ route('admin.golden-labels.index', ['country' => 'IT']) }}" class="menu-link"><div>Italy</div></a>
+            </li>
+            <li class="menu-item {{ $glOpen && ($glCountry === 'ALL' || ($glOpen && $glCountry === '')) ? 'active' : '' }}">
+              <a href="{{ route('admin.golden-labels.index', ['country' => 'ALL']) }}" class="menu-link"><div>Все</div></a>
+            </li>
+          </ul>
         </li>
         <li class="menu-item {{ request()->routeIs('admin.manufacturers.*') ? 'active' : '' }}">
           <a href="{{ route('admin.manufacturers.index') }}" class="menu-link">
@@ -267,7 +320,7 @@
             </li>
             <li class="menu-item {{ request()->routeIs('admin.test.php') && !request()->routeIs('admin.test.php.*') ? 'active' : '' }} {{ request()->routeIs('admin.test.php.*') ? 'active open' : '' }}">
               <a href="javascript:void(0);" class="menu-link menu-toggle">
-                <div>PHP</div>
+                <div>Украина</div>
               </a>
               <ul class="menu-sub">
                 <li class="menu-item {{ request()->routeIs('admin.test.php') && !request()->routeIs('admin.test.php.*') ? 'active' : '' }}">
@@ -277,7 +330,7 @@
                   <a href="{{ route('admin.test.php.map') }}" class="menu-link"><div>День · карта</div></a>
                 </li>
                 <li class="menu-item {{ request()->routeIs('admin.test.php.gemini') ? 'active' : '' }}">
-                  <a href="{{ route('admin.test.php.gemini') }}" class="menu-link"><div>День · Gemini</div></a>
+                  <a href="{{ route('admin.test.php.gemini') }}" class="menu-link"><div>День · поиск</div></a>
                 </li>
               </ul>
             </li>

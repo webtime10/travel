@@ -4,13 +4,17 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\AppSetting;
+use App\Models\GoldenDay;
 use App\Models\GoldenLabel;
 use App\Models\Language;
+use App\Models\Location;
+use App\Models\Manufacturer;
 use App\Services\GeminiChatService;
 use App\Services\GeminiKeyPool;
 use App\Services\GeminiScenarioPlannerService;
 use App\Services\LocationCandidateFilter;
 use App\Services\LocationDayPacker;
+use App\Services\LocationDurationResolver;
 use App\Services\LocationPlanValidator;
 use App\Services\RagDatabaseService;
 use App\Services\RagLocationSearchService;
@@ -90,7 +94,7 @@ class TestController extends Controller
     }
 
     /**
-     * Mock UI: assemble trip from golden days by slots/labels (interactive demo).
+     * PHP slot assembler — Ukraine only (no Italy hubs/days).
      */
     public function phpMock()
     {
@@ -98,6 +102,7 @@ class TestController extends Controller
         $labels = GoldenLabel::query()
             ->with('descriptions')
             ->where('status', true)
+            ->whereIn('country_code', ['UA', 'BOTH'])
             ->orderBy('sort_order')
             ->orderBy('id')
             ->get();
@@ -105,29 +110,234 @@ class TestController extends Controller
         $hubLabels = $labels->filter(fn (GoldenLabel $l) => str_starts_with((string) $l->slug, 'hub-'))->values();
         $otherLabels = $labels->reject(fn (GoldenLabel $l) => str_starts_with((string) $l->slug, 'hub-'))->values();
 
+        $days = GoldenDay::query()
+            ->with(['stops.location', 'labels'])
+            ->where('is_active', true)
+            ->where('signature', 'like', 'ua-gd-%')
+            ->orderBy('id')
+            ->get()
+            ->map(function (GoldenDay $d) {
+                $stopIds = $d->stops->pluck('location_id')->filter()->values()->all();
+                $points = $d->stops->map(function ($stop) {
+                    $loc = $stop->location;
+                    $lat = $loc?->lat;
+                    $lng = $loc?->lng;
+                    if ($lat === null || $lng === null) {
+                        return null;
+                    }
+
+                    return [
+                        'location_id' => (int) ($stop->location_id ?? 0),
+                        'name' => (string) ($stop->name_ru ?: $stop->name ?: ($loc?->nameFor() ?? '')),
+                        'lat' => (float) $lat,
+                        'lng' => (float) $lng,
+                    ];
+                })->filter()->values()->all();
+
+                return [
+                    'id' => $d->id,
+                    'title' => $d->displayTitle(),
+                    'hub' => $d->hub_key ? ('hub-'.$d->hub_key) : '',
+                    'labels' => $d->labels->pluck('slug')->values()->all(),
+                    'stops' => implode(', ', $stopIds),
+                    'points' => $points,
+                ];
+            })
+            ->values();
+
         return view('admin.test.php', [
-            'pageTitle' => 'Test — PHP',
+            'pageTitle' => 'Украина',
             'defaultLanguage' => $defaultLanguage,
             'hubLabels' => $hubLabels,
             'otherLabels' => $otherLabels,
+            'uaDays' => $days,
             'testMode' => 'php',
         ]);
     }
 
-    /** Mock: build a day from map click + radius. */
+    /**
+     * Разбор клиентского запроса (UA) через Gemini → хабы / дни / дети / флаги.
+     */
+    public function phpParseQuery(Request $request, GeminiChatService $chat): JsonResponse
+    {
+        $data = $request->validate([
+            'query' => 'required|string|max:2000',
+        ]);
+
+        $allowedHubs = GoldenLabel::query()
+            ->where('status', true)
+            ->whereIn('country_code', ['UA', 'BOTH'])
+            ->where('slug', 'like', 'hub-%')
+            ->orderBy('sort_order')
+            ->pluck('slug')
+            ->values()
+            ->all();
+
+        $hubList = implode(', ', $allowedHubs);
+        $system = <<<'SYS'
+Ты парсер туристических запросов по Украине. Отвечай ТОЛЬКО валидным JSON без markdown.
+Схема:
+{
+  "hubs": ["hub-kyiv", ...],
+  "days": 10,
+  "kids": 0,
+  "adults": 2,
+  "family": false,
+  "hard_days": 1,
+  "trek_days": 0,
+  "transport": null
+}
+Правила:
+- hubs: только slug из списка ALLOWED_HUBS, СТРОГО в порядке упоминания в тексте («Киев Львов» → ["hub-kyiv","hub-lviv"], не наоборот). Если регионов нет — [].
+- days: целое 1–14; если не сказано — null.
+- kids / adults: числа; если не сказано — 0 / null.
+- family: true только если явно есть дети / семья / с детьми.
+- hard_days: целое 1–6 — сколько насыщенных дней. По умолчанию 1. Остальные обычные дни — средние (≈6–8 ч); въезд всегда лёгкий (метку soft не требуем).
+- trek_days: целое 0–6 — сколько дней с активным треком. По умолчанию 0. Ставь >0 только если явно трек/Говерла/восхождение.
+- transport: "plane" | "bus" | "car" | null — только если явно самолёт/перелёт, автобус или автомобиль/машина. Перелёт ≠ выезд (наземный).
+SYS;
+        $system .= "\nALLOWED_HUBS: ".$hubList;
+
+        try {
+            $raw = $chat->reply(
+                "Разобери запрос клиента:\n".$data['query'],
+                [],
+                $system,
+            );
+        } catch (Throwable $e) {
+            Log::warning('phpParseQuery Gemini failed', ['error' => $e->getMessage()]);
+
+            return response()->json([
+                'ok' => false,
+                'error' => 'Gemini: '.$e->getMessage(),
+            ], 422);
+        }
+
+        $parsed = $this->decodePhpQueryJson($raw);
+        if ($parsed === null) {
+            return response()->json([
+                'ok' => false,
+                'error' => 'Не удалось разобрать ответ Gemini',
+                'raw' => mb_substr($raw, 0, 500),
+            ], 422);
+        }
+
+        $hubs = [];
+        foreach ((array) ($parsed['hubs'] ?? []) as $slug) {
+            $slug = (string) $slug;
+            if (in_array($slug, $allowedHubs, true) && ! in_array($slug, $hubs, true)) {
+                $hubs[] = $slug;
+            }
+        }
+
+        $days = $parsed['days'] ?? null;
+        $days = is_numeric($days) ? max(1, min(14, (int) $days)) : null;
+        $kids = max(0, min(10, (int) ($parsed['kids'] ?? 0)));
+        $adults = isset($parsed['adults']) && is_numeric($parsed['adults'])
+            ? max(0, min(20, (int) $parsed['adults']))
+            : null;
+        $family = (bool) ($parsed['family'] ?? false) || $kids > 0;
+        $hardDays = (int) ($parsed['hard_days'] ?? 1);
+        if ($hardDays < 1 || $hardDays > 6) {
+            $hardDays = 1;
+        }
+        $trekDays = (int) ($parsed['trek_days'] ?? 0);
+        if ($trekDays < 0 || $trekDays > 6) {
+            $trekDays = 0;
+        }
+
+        $transport = $parsed['transport'] ?? null;
+        $transport = in_array($transport, ['plane', 'bus', 'car'], true) ? $transport : null;
+
+        return response()->json([
+            'ok' => true,
+            'hubs' => $hubs,
+            'days' => $days,
+            'kids' => $kids,
+            'adults' => $adults,
+            'family' => $family,
+            'hard_days' => $hardDays,
+            'trek_days' => $trekDays,
+            'transport' => $transport,
+        ]);
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function decodePhpQueryJson(string $raw): ?array
+    {
+        $raw = trim($raw);
+        if (preg_match('/```(?:json)?\s*([\s\S]*?)```/u', $raw, $m)) {
+            $raw = trim($m[1]);
+        }
+        if (! str_starts_with($raw, '{')) {
+            $start = strpos($raw, '{');
+            $end = strrpos($raw, '}');
+            if ($start === false || $end === false || $end <= $start) {
+                return null;
+            }
+            $raw = substr($raw, $start, $end - $start + 1);
+        }
+        try {
+            $decoded = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (Throwable) {
+            return null;
+        }
+
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    /** Build a day from map — Ukraine locations. */
     public function phpMap()
     {
+        $uaId = Manufacturer::query()->where('code', 'UA')->value('id');
+        $pois = Location::query()
+            ->with('descriptions')
+            ->where('manufacturer_id', $uaId)
+            ->whereNotNull('lat')
+            ->whereNotNull('lng')
+            ->orderByDesc('weight')
+            ->limit(250)
+            ->get()
+            ->map(fn (Location $l) => [
+                'id' => $l->id,
+                'name' => $l->nameFor(Language::admin()),
+                'lat' => (float) $l->lat,
+                'lng' => (float) $l->lng,
+                'kind' => (string) data_get($l->meta, 'place_type', 'точка'),
+                'weight' => (int) ($l->weight ?? 5),
+            ])
+            ->values();
+
         return view('admin.test.php_map', [
-            'pageTitle' => 'Test — PHP · карта',
+            'pageTitle' => 'Украина · карта',
+            'pois' => $pois,
             'testMode' => 'php',
         ]);
     }
 
-    /** Mock: build a day via area text → location list (Gemini/vector later). */
+    /** Area text → Ukraine location list (demo filter by name). */
     public function phpGemini()
     {
+        $uaId = Manufacturer::query()->where('code', 'UA')->value('id');
+        $sample = Location::query()
+            ->with('descriptions')
+            ->where('manufacturer_id', $uaId)
+            ->orderByDesc('weight')
+            ->limit(80)
+            ->get()
+            ->map(fn (Location $l) => [
+                'id' => $l->id,
+                'name' => $l->nameFor(Language::admin()),
+                'region' => (string) data_get($l->meta, 'region', ''),
+                'weight' => (int) ($l->weight ?? 5),
+            ])
+            ->values();
+
         return view('admin.test.php_gemini', [
-            'pageTitle' => 'Test — PHP · Gemini локации',
+            'pageTitle' => 'Украина · поиск локаций',
+            'sampleLocations' => $sample,
             'testMode' => 'php',
         ]);
     }
@@ -813,7 +1023,7 @@ class TestController extends Controller
 
         $hours = 0.0;
         try {
-            $hours = app(\App\Services\LocationDurationResolver::class)->hoursForId($id, $name);
+            $hours = app(LocationDurationResolver::class)->hoursForId($id, $name);
         } catch (Throwable) {
             $hours = 0.0;
         }
@@ -858,7 +1068,7 @@ class TestController extends Controller
         $fromDb = null;
         if ($id > 0) {
             try {
-                $loc = \App\Models\Location::query()->find($id, ['id', 'meta', 'meta_ru']);
+                $loc = Location::query()->find($id, ['id', 'meta', 'meta_ru']);
                 if ($loc) {
                     $ru = is_array($loc->meta_ru) ? $loc->meta_ru : [];
                     $he = is_array($loc->meta) ? $loc->meta : [];

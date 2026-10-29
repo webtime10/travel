@@ -38,9 +38,9 @@
             <i class="bx bx-code-alt bx-md"></i>
           </span>
           <div>
-            <h5 class="mb-1 text-body">PHP</h5>
+            <h5 class="mb-1 text-body">Украина</h5>
             <p class="mb-0 small text-muted">
-              Слоты дней + метки → золотые дни (макет). Без Gemini.
+              Слоты + метки → золотые дни. Сборка маршрута по Украине.
             </p>
           </div>
         </div>

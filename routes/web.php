@@ -6,17 +6,18 @@ use App\Http\Controllers\Admin\AttributeController;
 use App\Http\Controllers\Admin\AttributeGroupController;
 use App\Http\Controllers\Admin\CategoryController;
 use App\Http\Controllers\Admin\DatabaseController;
+use App\Http\Controllers\Admin\GoldenDayController;
+use App\Http\Controllers\Admin\GoldenLabelController;
 use App\Http\Controllers\Admin\HelpCategoryController;
 use App\Http\Controllers\Admin\LanguageController;
 use App\Http\Controllers\Admin\LocationController;
-use App\Http\Controllers\Admin\ManufacturerController;
 use App\Http\Controllers\Admin\MainController;
+use App\Http\Controllers\Admin\ManufacturerController;
 use App\Http\Controllers\Admin\ProductController;
 use App\Http\Controllers\Admin\ProductPipelineController;
 use App\Http\Controllers\Admin\RoleController;
-use App\Http\Controllers\Admin\GoldenDayController;
-use App\Http\Controllers\Admin\GoldenLabelController;
 use App\Http\Controllers\Admin\RouteSkeletonController;
+use App\Http\Controllers\Admin\SavedRouteController;
 use App\Http\Controllers\Admin\TestController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\Auth\AdminLoginController;
@@ -53,6 +54,7 @@ Route::prefix('admin')
         Route::get('test/php', [TestController::class, 'phpMock'])->name('test.php');
         Route::get('test/php/map', [TestController::class, 'phpMap'])->name('test.php.map');
         Route::get('test/php/gemini-locations', [TestController::class, 'phpGemini'])->name('test.php.gemini');
+        Route::post('test/php/parse-query', [TestController::class, 'phpParseQuery'])->name('test.php.parse');
         Route::get('test/scenario', [TestController::class, 'scenario'])->name('test.scenario');
         Route::post('test/scenario/plan', [TestController::class, 'scenarioPlan'])->name('test.scenario.plan');
         Route::post('test/scenario/audit', [TestController::class, 'scenarioAudit'])->name('test.scenario.audit');
@@ -73,6 +75,7 @@ Route::prefix('admin')
         Route::get('products/{product}/docx-json', [ProductController::class, 'docxJson'])->name('products.docx-json');
         Route::resource('products', ProductController::class)->except(['show']);
 
+        Route::get('locations/suggest', [LocationController::class, 'suggest'])->name('locations.suggest');
         Route::post('locations/bulk-delete', [LocationController::class, 'bulkDelete'])->name('locations.bulk-delete');
         Route::get('locations/facts-pipeline/status', [LocationController::class, 'factsPipelineStatus'])->name('locations.facts-pipeline.status');
         Route::post('locations/facts-pipeline/start', [LocationController::class, 'factsPipelineStart'])->name('locations.facts-pipeline.start');
@@ -104,15 +107,29 @@ Route::prefix('admin')
         Route::get('route-skeletons/{route_skeleton}', [RouteSkeletonController::class, 'show'])->name('route-skeletons.show');
         Route::post('route-skeletons/{route_skeleton}/translate-ru', [RouteSkeletonController::class, 'translateRu'])->name('route-skeletons.translate-ru');
 
+        Route::get('saved-routes', [SavedRouteController::class, 'index'])->name('saved-routes.index');
+        Route::post('saved-routes', [SavedRouteController::class, 'store'])->name('saved-routes.store');
+        Route::get('saved-routes/{saved_route}', [SavedRouteController::class, 'show'])->name('saved-routes.show');
+        Route::put('saved-routes/{saved_route}', [SavedRouteController::class, 'update'])->name('saved-routes.update');
+        Route::delete('saved-routes/{saved_route}', [SavedRouteController::class, 'destroy'])->name('saved-routes.destroy');
+
         Route::resource('golden-labels', GoldenLabelController::class)->except(['show']);
         Route::get('golden-days', [GoldenDayController::class, 'index'])->name('golden-days.index');
+        Route::get('golden-days/create', [GoldenDayController::class, 'create'])->name('golden-days.create');
+        Route::post('golden-days', [GoldenDayController::class, 'store'])->name('golden-days.store');
         Route::post('golden-days/rebuild', [GoldenDayController::class, 'rebuild'])->name('golden-days.rebuild');
         Route::post('golden-days/translate-ru-batch', [GoldenDayController::class, 'translateRuBatch'])->name('golden-days.translate-ru-batch');
         Route::post('golden-days/sync-hub-labels', [GoldenDayController::class, 'syncHubLabels'])->name('golden-days.sync-hub-labels');
         Route::get('golden-days/{golden_day}', [GoldenDayController::class, 'show'])->name('golden-days.show');
+        Route::put('golden-days/{golden_day}', [GoldenDayController::class, 'update'])->name('golden-days.update');
         Route::post('golden-days/{golden_day}/toggle', [GoldenDayController::class, 'toggle'])->name('golden-days.toggle');
         Route::post('golden-days/{golden_day}/translate-ru', [GoldenDayController::class, 'translateRu'])->name('golden-days.translate-ru');
         Route::post('golden-days/{golden_day}/labels', [GoldenDayController::class, 'syncLabels'])->name('golden-days.sync-labels');
+        Route::post('golden-days/{golden_day}/stops', [GoldenDayController::class, 'storeStop'])->name('golden-days.stops.store');
+        Route::post('golden-days/{golden_day}/stops/reorder', [GoldenDayController::class, 'reorderStops'])->name('golden-days.stops.reorder');
+        Route::delete('golden-days/{golden_day}/stops/{stop}', [GoldenDayController::class, 'destroyStop'])->name('golden-days.stops.destroy');
+        Route::post('golden-days/{golden_day}/stops/{stop}/link', [GoldenDayController::class, 'linkStop'])->name('golden-days.stops.link');
+        Route::post('golden-days/{golden_day}/stops/{stop}/unlink', [GoldenDayController::class, 'unlinkStop'])->name('golden-days.stops.unlink');
 
         Route::resource('attribute-groups', AttributeGroupController::class)->except(['show']);
         Route::resource('attributes', AttributeController::class)->except(['show']);

@@ -10,6 +10,9 @@
     @endif
   </h4>
   <div class="page-toolbar d-flex flex-wrap gap-1">
+    <a href="{{ route('admin.golden-days.create') }}" class="btn btn-primary">
+      <i class="bx bx-plus me-1"></i> Новый день
+    </a>
     <form method="post" action="{{ route('admin.golden-days.sync-hub-labels') }}" class="d-inline"
           onsubmit="return confirm('Проставить метки hub-* / junk всем дням по колонке Hub?');">
       @csrf
@@ -51,14 +54,33 @@
 <form method="get" class="card mb-3">
   <div class="card-body">
     <div class="row g-2 align-items-end">
-      <div class="col-12 col-md-6 col-lg-4">
+      <div class="col-12 col-md-3 col-lg-2">
+        <label class="form-label mb-1">Страна</label>
+        <select name="country" class="form-select" onchange="this.form.submit()">
+          <option value="UA" {{ ($country ?? '') === 'UA' ? 'selected' : '' }}>Ukraine</option>
+          <option value="IT" {{ ($country ?? '') === 'IT' ? 'selected' : '' }}>Italy</option>
+          <option value="ALL" {{ ($country ?? '') === 'ALL' ? 'selected' : '' }}>Все</option>
+        </select>
+      </div>
+      <div class="col-12 col-md-4 col-lg-3">
         <label class="form-label mb-1">Search</label>
         <input type="text" name="q" value="{{ $q }}" class="form-control" placeholder="Title / overnight…">
       </div>
+      <div class="col-12 col-md-4 col-lg-3">
+        <label class="form-label mb-1">Регион</label>
+        <select name="category_id" class="form-select" onchange="this.form.submit()">
+          <option value="">Все регионы</option>
+          @foreach(($regionOptions ?? []) as $reg)
+            <option value="{{ $reg->id }}" {{ (int) ($categoryId ?? 0) === (int) $reg->id ? 'selected' : '' }}>
+              {{ $reg->nameFor($defaultLanguage ?? null) }}
+            </option>
+          @endforeach
+        </select>
+      </div>
       <div class="col-auto">
         <button type="submit" class="btn btn-primary">Find</button>
-        @if($q !== '')
-          <a href="{{ route('admin.golden-days.index') }}" class="btn btn-outline-secondary">Reset</a>
+        @if($q !== '' || !empty($categoryId))
+          <a href="{{ route('admin.golden-days.index', ['country' => $country ?? 'UA']) }}" class="btn btn-outline-secondary">Reset</a>
         @endif
       </div>
     </div>
@@ -72,6 +94,7 @@
         <tr>
           <th>#</th>
           <th>Title</th>
+          <th>Region</th>
           <th>Hub</th>
           <th>Stops</th>
           <th>Usage</th>
@@ -91,13 +114,13 @@
                 <span class="badge bg-label-success ms-1" style="font-size:9px">RU</span>
               @endif
               @if($item->labels->isNotEmpty())
-                <div class="mt-1">
-                  @foreach($item->labels as $lab)
+                <div class="mt-1">                  @foreach($item->labels as $lab)
                     <span class="badge bg-label-info me-1" style="font-size:10px">{{ $lab->nameFor($defaultLanguage ?? null) }}</span>
                   @endforeach
                 </div>
               @endif
             </td>
+            <td class="small">{{ $item->category?->nameFor($defaultLanguage ?? null) ?: '—' }}</td>
             <td class="small text-nowrap">{{ $item->hub_key ?: '—' }}@if($item->junk_reason)<div class="text-danger" style="font-size:10px">{{ $item->junk_reason }}</div>@endif</td>
             <td class="small" style="max-width:420px;white-space:normal;word-break:break-word">
               <span class="badge bg-label-secondary">{{ $item->stops_count }}</span>
@@ -118,7 +141,10 @@
               @endif
             </td>
             <td class="text-nowrap">
-              <a href="{{ route('admin.golden-days.show', $item) }}" class="btn btn-icon btn-sm btn-outline-primary" title="View"><i class="bx bx-show"></i></a>
+              <a href="{{ route('admin.golden-days.show', $item) }}#gd-edit"
+                 class="btn btn-sm btn-primary">
+                <i class="bx bx-edit me-1"></i>Редактировать
+              </a>
               <button type="button"
                       class="btn btn-icon btn-sm btn-outline-primary golden-translate-one-btn"
                       title="Перевод на русский"

@@ -11,8 +11,15 @@ class GoldenLabel extends Model
 {
     protected $fillable = [
         'slug',
+        'country_code',
         'sort_order',
         'status',
+    ];
+
+    public const COUNTRIES = [
+        'BOTH' => 'Общие (IT+UA)',
+        'IT' => 'Italy',
+        'UA' => 'Ukraine',
     ];
 
     protected $casts = [

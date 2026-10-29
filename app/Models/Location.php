@@ -17,9 +17,13 @@ class Location extends Model
         'lat',
         'lng',
         'sort_order',
+        'weight',
+        'visit_hours',
+        'kosher_food',
         'status',
         'meta',
         'meta_ru',
+        'flexible_blocks',
         'facts_status',
         'facts_coverage',
         'facts_review',
@@ -30,6 +34,15 @@ class Location extends Model
         'base' => 'Base (ночёвка)',
         'place' => 'Place (точка)',
         'end' => 'End (выезд/финиш)',
+    ];
+
+    /** Flexible Content layouts (admin UI labels). */
+    public const FLEXIBLE_LAYOUTS = [
+        'text' => 'Текстовое поле',
+        'link' => 'Ссылка',
+        'photo' => 'Фотография',
+        'ad' => 'Рекламный блок',
+        'map_screenshot' => 'Скриншот карты',
     ];
 
     public const FACTS_STATUSES = [
@@ -47,6 +60,7 @@ class Location extends Model
         'status' => 'boolean',
         'meta' => 'array',
         'meta_ru' => 'array',
+        'flexible_blocks' => 'array',
     ];
 
     public function manufacturer(): BelongsTo

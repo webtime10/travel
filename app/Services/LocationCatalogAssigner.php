@@ -117,15 +117,31 @@ class LocationCatalogAssigner
         $sort = 0;
         foreach ((array) config('travel_regions.regions', []) as $country => $regions) {
             foreach ($regions as $key => $row) {
+                $nameCandidates = array_values(array_unique(array_filter(array_merge(
+                    [(string) ($row['ru'] ?? '')],
+                    (array) ($row['legacy_ru'] ?? [])
+                ))));
                 $existing = Category::query()
                     ->where('parent_id', $parent->id)
-                    ->whereHas('descriptions', fn ($q) => $q->where('name', $row['ru']))
+                    ->whereHas('descriptions', fn ($q) => $q->whereIn('name', $nameCandidates))
                     ->first();
                 if (! $existing) {
                     $existing = Category::create(['parent_id' => $parent->id, 'sort_order' => $sort++, 'status' => true]);
                     CategoryDescription::create(['category_id' => $existing->id, 'language_id' => $he->id, 'name' => $row['he']]);
                     if ($ru) {
                         CategoryDescription::create(['category_id' => $existing->id, 'language_id' => $ru->id, 'name' => $row['ru']]);
+                    }
+                } else {
+                    // Keep one category if region was renamed (e.g. «кольцо замков» → «Львов»).
+                    CategoryDescription::updateOrCreate(
+                        ['category_id' => $existing->id, 'language_id' => $he->id],
+                        ['name' => $row['he']]
+                    );
+                    if ($ru) {
+                        CategoryDescription::updateOrCreate(
+                            ['category_id' => $existing->id, 'language_id' => $ru->id],
+                            ['name' => $row['ru']]
+                        );
                     }
                 }
                 $out[$country][$key] = $existing->id;

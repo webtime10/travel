@@ -8,23 +8,38 @@ use App\Models\GoldenLabelDescription;
 use App\Models\Language;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\View\View;
 
 class GoldenLabelController extends Controller
 {
-    public function index(): View
+    public function index(Request $request): View
     {
         $defaultLanguage = Language::admin();
-        $labels = GoldenLabel::with(['descriptions.language'])
+        $country = strtoupper(trim((string) $request->input('country', 'ALL')));
+        if (! in_array($country, ['ALL', 'IT', 'UA', 'BOTH'], true)) {
+            $country = 'ALL';
+        }
+
+        $query = GoldenLabel::with(['descriptions.language'])
+            ->orderBy('country_code')
             ->orderBy('sort_order')
-            ->orderBy('id')
-            ->get();
+            ->orderBy('id');
+
+        if ($country === 'IT') {
+            $query->whereIn('country_code', ['IT', 'BOTH']);
+        } elseif ($country === 'UA') {
+            $query->whereIn('country_code', ['UA', 'BOTH']);
+        } elseif ($country === 'BOTH') {
+            $query->where('country_code', 'BOTH');
+        }
 
         return view('admin.golden_labels.index', [
             'pageTitle' => 'Golden labels',
-            'labels' => $labels,
+            'labels' => $query->get(),
             'defaultLanguage' => $defaultLanguage,
+            'country' => $country,
         ]);
     }
 
@@ -59,6 +74,7 @@ class GoldenLabelController extends Controller
 
             $item = GoldenLabel::create([
                 'slug' => $slug,
+                'country_code' => $this->normalizeCountry($request->input('country_code')),
                 'sort_order' => (int) $request->input('sort_order', 0),
                 'status' => $request->boolean('status', true),
             ]);
@@ -87,13 +103,16 @@ class GoldenLabelController extends Controller
             }
             $golden_label->update([
                 'slug' => mb_substr($slug, 0, 64),
+                'country_code' => $this->normalizeCountry($request->input('country_code')),
                 'sort_order' => (int) $request->input('sort_order', 0),
                 'status' => $request->boolean('status', true),
             ]);
             $this->syncNames($golden_label, $request, $languages);
         });
 
-        return redirect()->route('admin.golden-labels.index')->with('success', 'Сохранено');
+        return redirect()
+            ->route('admin.golden-labels.index', ['country' => $golden_label->country_code ?: 'ALL'])
+            ->with('success', 'Сохранено');
     }
 
     public function destroy(GoldenLabel $golden_label): RedirectResponse
@@ -112,7 +131,7 @@ class GoldenLabelController extends Controller
     }
 
     /**
-     * @param  \Illuminate\Support\Collection<int, Language>  $languages
+     * @param  Collection<int, Language>  $languages
      * @return array<string, mixed>
      */
     private function rules($languages, ?int $ignoreId = null): array
@@ -122,6 +141,7 @@ class GoldenLabelController extends Controller
             $slugRule .= ','.$ignoreId;
         }
         $rules = [
+            'country_code' => 'required|in:IT,UA,BOTH',
             'slug' => $slugRule,
             'sort_order' => 'nullable|integer|min:0',
             'status' => 'nullable|boolean',
@@ -135,8 +155,15 @@ class GoldenLabelController extends Controller
         return $rules;
     }
 
+    private function normalizeCountry(mixed $raw): string
+    {
+        $code = strtoupper(trim((string) $raw));
+
+        return array_key_exists($code, GoldenLabel::COUNTRIES) ? $code : 'BOTH';
+    }
+
     /**
-     * @param  \Illuminate\Support\Collection<int, Language>  $languages
+     * @param  Collection<int, Language>  $languages
      */
     private function syncNames(GoldenLabel $item, Request $request, $languages): void
     {

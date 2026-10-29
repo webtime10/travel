@@ -46,6 +46,19 @@ class GoldenDay extends Model
         return trim((string) ($this->title_ru ?? '')) !== '';
     }
 
+    /** UA sandbox days use signature ua-gd-*; everything else is treated as Italy. */
+    public function countryCode(): string
+    {
+        $sig = (string) ($this->signature ?? '');
+
+        return str_starts_with($sig, 'ua-gd-') ? 'UA' : 'IT';
+    }
+
+    public function isUkraine(): bool
+    {
+        return $this->countryCode() === 'UA';
+    }
+
     public function area(): BelongsTo
     {
         return $this->belongsTo(Area::class);

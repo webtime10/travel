@@ -46,6 +46,14 @@ class Category extends Model
         return $this->belongsToMany(Location::class, 'category_location');
     }
 
+    public function nameFor(?Language $lang = null): string
+    {
+        $lang = $lang ?? Language::admin();
+        $d = $lang ? $this->descriptions->firstWhere('language_id', $lang->id) : null;
+
+        return $d->name ?? $this->descriptions->first()?->name ?? '#'.$this->id;
+    }
+
     public function descendantIdList(): array
     {
         $this->loadMissing('children');

@@ -98,12 +98,13 @@
 
 <form id="locationsBulkDeleteForm" method="post" action="{{ route('admin.locations.bulk-delete') }}">@csrf</form>
 
-<form method="get" action="{{ route('admin.locations.index') }}" class="card mb-3">
+<form method="get" action="{{ route('admin.locations.index') }}" class="card mb-3" id="locationsFilterForm">
   <div class="card-body py-3">
     <div class="row g-2 align-items-end">
-      <div class="col-12 col-lg-3">
-        <label class="form-label mb-1" for="locationsSearch">Поиск по model или названию</label>
-        <input type="text" class="form-control" id="locationsSearch" name="q" value="{{ $search }}" placeholder="135 или Palermo" autocomplete="off">
+      <div class="col-12 col-lg-3 position-relative">
+        <label class="form-label mb-1" for="locationsSearch">Поиск (от 2 букв) · model / название</label>
+        <input type="text" class="form-control" id="locationsSearch" name="q" value="{{ $search }}" placeholder="Белладжо или 504" autocomplete="off">
+        <div id="locationsSuggest" class="list-group position-absolute w-100 shadow-sm" style="z-index:20;display:none;max-height:280px;overflow:auto;"></div>
       </div>
       <div class="col-12 col-md-4 col-lg-2">
         <label class="form-label mb-1">Страна (производитель)</label>
@@ -136,13 +137,17 @@
           @endforeach
         </select>
       </div>
-      <div class="col-auto d-flex gap-1">
-        <button type="submit" class="btn btn-primary">Найти</button>
-        @if($search !== '' || $manufacturerId || $categoryId || $attributeId)
+      <div class="col-auto d-flex flex-wrap gap-1">
+        <button type="submit" class="btn btn-primary" name="semantic" value="0">Найти</button>
+        <button type="submit" class="btn btn-outline-primary" name="semantic" value="1" title="Gemini подберёт похожие по смыслу">По смыслу (Gemini)</button>
+        @if($search !== '' || $manufacturerId || $categoryId || $attributeId || !empty($semantic))
           <a href="{{ route('admin.locations.index') }}" class="btn btn-outline-secondary">Сброс</a>
         @endif
       </div>
     </div>
+    @if(!empty($searchNote))
+      <div class="small mt-2 {{ ($searchMode ?? '') === 'gemini' ? 'text-success' : 'text-muted' }}">{{ $searchNote }}</div>
+    @endif
   </div>
 </form>
 
@@ -156,6 +161,9 @@
           <th style="max-width:280px">Name</th>
           <th>Страна</th>
           <th>Region</th>
+          <th title="Вес 1–10">Вес</th>
+          <th title="Часы на месте">Время</th>
+          <th>Кошер</th>
           <th>Lat / Lng</th>
           <th>Вектор</th>
           <th>Sort</th>
@@ -173,6 +181,15 @@
             <td class="text-truncate" style="max-width:280px" dir="auto" title="{{ $displayName }}">{{ $displayName }}</td>
             <td class="small">{{ $item->manufacturer?->nameFor($defaultLanguage) ?? '—' }}</td>
             <td class="small">{{ $item->categories->map(fn ($c) => optional($c->descriptions->firstWhere('language_id', $defaultLanguage?->id) ?? $c->descriptions->first())->name)->filter()->implode(', ') ?: '—' }}</td>
+            <td class="small">{{ $item->weight ?? '—' }}</td>
+            <td class="small">{{ $item->visit_hours !== null ? rtrim(rtrim(number_format((float) $item->visit_hours, 1, '.', ''), '0'), '.').' ч' : '—' }}</td>
+            <td class="small">
+              @php $k = $item->kosher_food ?? 'unknown'; @endphp
+              @if($k === 'yes') <span class="badge bg-label-success">кошер</span>
+              @elseif($k === 'no') <span class="badge bg-label-secondary">не кошер</span>
+              @else <span class="text-muted">—</span>
+              @endif
+            </td>
             <td class="small text-muted">
               @if($item->lat !== null && $item->lng !== null)
                 {{ $item->lat }}, {{ $item->lng }}
@@ -409,5 +426,55 @@
     cancel: '.ru-content-pipeline-cancel-btn',
     confirm: 'Перевести содержимое {n} локаций (тексты/часы/факты, ссылки без изменений)? Долго. Нужен worker: php artisan queue:work',
   });
+
+  (function () {
+    const input = document.getElementById('locationsSearch');
+    const box = document.getElementById('locationsSuggest');
+    if (!input || !box) return;
+    const url = @json(route('admin.locations.suggest'));
+    const editTpl = @json(route('admin.locations.edit', ['location' => 999999]));
+    let timer = null;
+    let seq = 0;
+
+    function hide() { box.style.display = 'none'; box.innerHTML = ''; }
+
+    function editUrl(id) {
+      return editTpl.replace('999999', String(id));
+    }
+
+    function render(items) {
+      if (!items.length) { hide(); return; }
+      box.innerHTML = items.map(function (it) {
+        const label = (it.model ? ('#' + it.model + ' · ') : '') + it.name;
+        return '<a href="' + editUrl(it.id) + '" class="list-group-item list-group-item-action py-2 small" dir="auto">'
+          + label.replace(/[&<>"']/g, function (c) {
+            return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c];
+          }) + '</a>';
+      }).join('');
+      box.style.display = 'block';
+    }
+
+    input.addEventListener('input', function () {
+      const q = input.value.trim();
+      clearTimeout(timer);
+      if (q.length < 2) { hide(); return; }
+      const my = ++seq;
+      timer = setTimeout(async function () {
+        try {
+          const res = await fetch(url + '?q=' + encodeURIComponent(q), { headers: { 'Accept': 'application/json' } });
+          const data = await res.json();
+          if (my !== seq) return;
+          render(Array.isArray(data.items) ? data.items : []);
+        } catch (e) { if (my === seq) hide(); }
+      }, 220);
+    });
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') hide();
+    });
+    document.addEventListener('click', function (e) {
+      if (!box.contains(e.target) && e.target !== input) hide();
+    });
+  })();
 </script>
 @endsection
