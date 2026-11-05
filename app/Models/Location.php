@@ -28,6 +28,7 @@ class Location extends Model
         'facts_coverage',
         'facts_review',
         'facts_split_at',
+        'passport_tags',
     ];
 
     public const TRIP_ROLES = [
@@ -55,6 +56,7 @@ class Location extends Model
     protected $casts = [
         'facts_review' => 'array',
         'facts_split_at' => 'datetime',
+        'passport_tags' => 'array',
         'lat' => 'float',
         'lng' => 'float',
         'status' => 'boolean',

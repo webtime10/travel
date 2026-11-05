@@ -62,6 +62,14 @@ class GeminiKeyPool
     }
 
     /**
+     * Start from the first key in GEMINI_API_KEY (put free first, paid last).
+     */
+    public function resetToFirst(): void
+    {
+        Cache::put(self::CACHE_INDEX, 0, now()->addDays(7));
+    }
+
+    /**
      * Run callback with current key; on failure rotate and retry across all keys.
      *
      * @template T
@@ -80,11 +88,16 @@ class GeminiKeyPool
             $msg = $e->getMessage();
 
             return str_contains($msg, '429')
+                || str_contains($msg, '503')
+                || str_contains($msg, 'UNAVAILABLE')
+                || str_contains($msg, 'high demand')
+                || str_contains($msg, '402')
                 || str_contains($msg, '401')
                 || str_contains($msg, '403')
                 || str_contains($msg, 'RESOURCE_EXHAUSTED')
                 || str_contains($msg, 'API_KEY')
                 || str_contains($msg, 'quota')
+                || str_contains(mb_strtolower($msg), 'credits are depleted')
                 || str_contains($msg, 'PERMISSION_DENIED');
         };
 
@@ -100,7 +113,8 @@ class GeminiKeyPool
                     throw $e;
                 }
                 $this->rotate();
-                usleep(400_000);
+                // Brief pause between keys so RPM spikes don't cascade.
+                usleep(1_200_000);
             }
         }
 

@@ -29,11 +29,13 @@ class GoldenDay extends Model
         'is_active',
         'junk_reason',
         'meta',
+        'reverse_tags',
         'ru_units',
     ];
 
     protected $casts = [
         'meta' => 'array',
+        'reverse_tags' => 'array',
         'ru_units' => 'array',
         'is_active' => 'boolean',
         'stops_count' => 'integer',

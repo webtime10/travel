@@ -20,6 +20,7 @@ class RouteSkeleton extends Model
         'departure_hub_ru',
         'search_blob',
         'meta',
+        'reverse_principle',
         'ru_units',
     ];
 
@@ -27,6 +28,7 @@ class RouteSkeleton extends Model
         'start_date' => 'date',
         'is_template' => 'boolean',
         'meta' => 'array',
+        'reverse_principle' => 'array',
         'ru_units' => 'array',
         'days_count' => 'integer',
     ];

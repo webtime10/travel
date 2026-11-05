@@ -20,6 +20,20 @@
         <i class="bx bx-purchase-tag me-1"></i> Метки из Hub
       </button>
     </form>
+    <button
+      type="button"
+      class="btn btn-outline-warning gd-reverse-pipeline-start-btn"
+      title="Gemini: почему так сложен день + метки (кошер/дети/ночёвка). Нужен queue:work"
+      data-url="{{ route('admin.golden-days.reverse-pipeline.start') }}"
+      data-cancel-url="{{ route('admin.golden-days.reverse-pipeline.cancel') }}"
+      data-status-url="{{ route('admin.golden-days.reverse-pipeline.status') }}"
+      data-csrf="{{ csrf_token() }}"
+      data-country="{{ $country ?? 'UA' }}"
+      data-pending="{{ (int) ($reversePending ?? 0) }}"
+    >
+      <i class="bx bx-search-alt me-1"></i> Обратный разбор
+      <span class="badge bg-label-dark ms-1">{{ (int) ($reversePending ?? 0) }}</span>
+    </button>
     <button type="button"
             class="btn btn-outline-primary golden-translate-all-btn"
             data-url="{{ route('admin.golden-days.translate-ru-batch') }}"
@@ -39,6 +53,21 @@
 @if(session('success'))
   <div class="alert alert-success">{{ session('success') }}</div>
 @endif
+
+<div class="gd-reverse-pipeline-progress border rounded p-3 mb-3 bg-light" style="display:none;">
+  <div class="d-flex align-items-center justify-content-between gap-2 mb-2 flex-wrap">
+    <div class="fw-semibold gd-reverse-pipeline-label">Обратный разбор golden days</div>
+    <div class="d-flex align-items-center gap-2">
+      <div class="fw-bold gd-reverse-pipeline-pct">0%</div>
+      <button type="button" class="btn btn-sm btn-outline-secondary gd-reverse-pipeline-cancel-btn">Стоп</button>
+    </div>
+  </div>
+  <div class="progress mb-2" style="height:1rem;">
+    <div class="progress-bar progress-bar-striped progress-bar-animated bg-warning gd-reverse-pipeline-bar" role="progressbar" style="width:0%"></div>
+  </div>
+  <div class="small text-muted gd-reverse-pipeline-status">—</div>
+  <div class="small text-danger gd-reverse-pipeline-error mt-1" style="display:none;"></div>
+</div>
 
 <div class="golden-translate-all-progress border rounded p-3 mb-3 bg-label-primary" style="display:none;">
   <div class="d-flex justify-content-between mb-1">
@@ -213,6 +242,84 @@
       }
     });
   });
+
+  (function () {
+    const btn = document.querySelector('.gd-reverse-pipeline-start-btn');
+    const box = document.querySelector('.gd-reverse-pipeline-progress');
+    const pctEl = document.querySelector('.gd-reverse-pipeline-pct');
+    const bar = document.querySelector('.gd-reverse-pipeline-bar');
+    const statusEl = document.querySelector('.gd-reverse-pipeline-status');
+    const errEl = document.querySelector('.gd-reverse-pipeline-error');
+    const cancelBtn = document.querySelector('.gd-reverse-pipeline-cancel-btn');
+    if (!btn) return;
+    let timer = null;
+    async function post(url, body) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'X-CSRF-TOKEN': btn.dataset.csrf,
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok && res.status !== 409) throw new Error(data.message || ('HTTP ' + res.status));
+      return data;
+    }
+    function render(s) {
+      const total = Number(s.total || 0);
+      const done = Number(s.done || 0) + Number(s.failed || 0);
+      const pct = total > 0 ? Math.round(done / total * 100) : 0;
+      bar.style.width = pct + '%';
+      pctEl.textContent = pct + '%';
+      statusEl.textContent = 'Дней: ' + done + ' / ' + total
+        + ' · OK ' + (s.ok || 0)
+        + (s.skipped ? (' · skip ' + s.skipped) : '')
+        + (s.failed ? (' · ошибок ' + s.failed) : '')
+        + (s.current ? (' · ' + s.current) : '');
+      if (s.last_error) { errEl.style.display = 'block'; errEl.textContent = s.last_error; }
+      else { errEl.style.display = 'none'; }
+      if (s.state === 'running') {
+        box.style.display = 'block';
+        btn.disabled = true;
+        bar.classList.add('progress-bar-animated');
+      } else {
+        btn.disabled = false;
+        bar.classList.remove('progress-bar-animated');
+        if (timer && (s.state === 'done' || s.state === 'cancelled')) {
+          clearInterval(timer); timer = null;
+          statusEl.textContent = (s.state === 'done' ? 'Готово. ' : 'Остановлено. ') + statusEl.textContent;
+        }
+      }
+    }
+    async function poll() {
+      const res = await fetch(btn.dataset.statusUrl, { headers: { 'Accept': 'application/json' } });
+      const s = await res.json().catch(() => ({}));
+      render(s);
+      return s;
+    }
+    function startPolling() {
+      if (timer) clearInterval(timer);
+      poll();
+      timer = setInterval(poll, 3000);
+    }
+    btn.addEventListener('click', async function () {
+      const n = Number(btn.dataset.pending || 0);
+      if (!confirm('Обратный разбор ' + n + ' golden days (фильтр страны на экране)? Нужен: php artisan queue:work. Не гоняйте параллельно тяжёлый RU.')) return;
+      try {
+        const data = await post(btn.dataset.url, { country: btn.dataset.country || 'ALL' });
+        if (!data.started) { alert(data.message || 'Нечего разбирать'); return; }
+        startPolling();
+      } catch (e) { alert(e.message || String(e)); }
+    });
+    cancelBtn.addEventListener('click', async function () {
+      if (!confirm('Остановить разбор?')) return;
+      try { await post(btn.dataset.cancelUrl); await poll(); } catch (e) { alert(e.message || String(e)); }
+    });
+    poll().then(function (s) { if (s.state === 'running') startPolling(); });
+  })();
 
   const allBtn = document.querySelector('.golden-translate-all-btn');
   if (!allBtn) return;

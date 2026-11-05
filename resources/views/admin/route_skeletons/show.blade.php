@@ -2,14 +2,24 @@
 @section('content')
 @php
   $showRu = ($lang ?? 'he') === 'ru' && $item->hasRussian();
+  $routeCode = $item->source_route_id !== null && $item->source_route_id !== ''
+    ? (string) $item->source_route_id
+    : null;
 @endphp
 <div class="d-flex justify-content-between align-items-start mb-4 flex-wrap gap-2">
   <div>
     <a href="{{ route('admin.route-skeletons.index') }}" class="small text-muted d-inline-block mb-1">← к списку</a>
-    <h4 class="mb-1">{{ $item->displayTitle($showRu) ?: 'Маршрут #'.$item->id }}</h4>
+    <h4 class="mb-1 d-flex flex-wrap align-items-center gap-2">
+      <span>{{ $item->displayTitle($showRu) ?: 'Маршрут #'.$item->id }}</span>
+      @if($routeCode)
+        <span class="badge bg-primary rounded-pill fs-6 px-3 py-2" title="Id тура в Python / цифры из названия папки">
+          Код {{ $routeCode }}
+        </span>
+      @endif
+    </h4>
     <div class="text-muted small">
       id={{ $item->id }}
-      · python={{ $item->source_route_id }}
+      @if($routeCode) · <strong>python={{ $routeCode }}</strong> @endif
       · {{ $item->days_count }} дн.
       @if($item->start_date) · старт {{ $item->start_date->format('d.m.Y') }} @endif
       @if($item->is_template) · <span class="badge bg-label-info">template</span> @endif
@@ -28,8 +38,91 @@
             data-reload="{{ route('admin.route-skeletons.show', [$item, 'lang' => 'ru']) }}">
       <i class="bx bx-globe me-1"></i> Перевод на русский
     </button>
+    <button type="button"
+            class="btn btn-outline-warning skeleton-reverse-one-btn"
+            data-url="{{ route('admin.route-skeletons.reverse', $item) }}"
+            data-csrf="{{ csrf_token() }}">
+      <i class="bx bx-search-alt me-1"></i> Принцип (Gemini)
+    </button>
+    <form action="{{ route('admin.route-skeletons.destroy', $item) }}" method="post" class="d-inline"
+          onsubmit="return confirm('Удалить этот short route #{{ $item->id }}? Дни каркаса тоже удалятся.');">
+      @csrf
+      @method('DELETE')
+      <button type="submit" class="btn btn-outline-danger" title="Удалить">
+        <i class="bx bx-trash me-1"></i> Удалить
+      </button>
+    </form>
   </div>
 </div>
+
+@php $rp = is_array($item->reverse_principle) ? $item->reverse_principle : null; @endphp
+@if($rp && empty($rp['skipped']))
+  <div class="card mb-3 border-warning">
+    <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+      <span>
+        Обратный разбор · v{{ $rp['schema_version'] ?? 1 }}
+        @if($routeCode)
+          <span class="badge bg-primary ms-2" title="Id тура в Python / цифры из названия папки">Код {{ $routeCode }}</span>
+        @endif
+      </span>
+      @if(!empty($rp['days']))
+        <span class="badge bg-label-secondary">дней в разборе: {{ count($rp['days']) }}</span>
+      @endif
+    </div>
+    <div class="card-body small">
+      @php
+        $abstract = $rp['abstract_user_prompt'] ?? $rp['synthetic_query'] ?? null;
+        $macro = is_array($rp['macro_architecture'] ?? null) ? $rp['macro_architecture'] : [];
+        $micro = is_array($rp['micro_clustering'] ?? null) ? $rp['micro_clustering'] : [];
+      @endphp
+      @if(!empty($abstract))
+        <div class="mb-2 p-2 rounded bg-label-secondary" dir="auto"><strong>Абстрактный запрос клиента:</strong> {{ $abstract }}</div>
+      @endif
+      <div class="mb-2" dir="auto"><strong>Выбор регионов:</strong> {{ $macro['region_selection_logic'] ?? $rp['principle'] ?? '—' }}</div>
+      <div class="mb-2" dir="auto"><strong>Базы и транзит:</strong> {{ $macro['routing_strategy'] ?? $rp['geo_logic'] ?? '—' }}</div>
+      @php $ft = is_array($rp['fine_tune'] ?? null) ? $rp['fine_tune'] : []; @endphp
+      @if(!empty($ft['question']) || !empty($ft['answer']))
+        <hr class="my-2">
+        <div class="fw-semibold mb-1">Пара для FunTunes</div>
+        <div class="mb-2 p-2 rounded bg-label-info" dir="auto"><strong>Вопрос:</strong> {{ $ft['question'] ?? $abstract ?? '—' }}</div>
+        <div class="mb-2 p-2 rounded border" dir="auto">
+          <strong>Ответ (summary):</strong> {{ is_array($ft['answer'] ?? null) ? ($ft['answer']['summary'] ?? '—') : '—' }}
+          @if(!empty($ft['answer']['days']))
+            <div class="mt-2 small text-muted">
+              @foreach($ft['answer']['days'] as $fd)
+                <div>День {{ $fd['day_index'] ?? '?' }}@if(!empty($fd['title'])) — {{ $fd['title'] }}@endif
+                  · id: {{ implode(', ', $fd['location_ids'] ?? []) }}</div>
+              @endforeach
+            </div>
+          @endif
+        </div>
+      @endif
+      @if($micro !== [])
+        <hr class="my-2">
+        <div class="fw-semibold mb-2">Микро-кластеризация (выборка дней)</div>
+        @foreach($micro as $m)
+          <div class="mb-3 p-2 border rounded">
+            <div><strong>День {{ $m['day_number'] ?? '?' }}</strong> — {{ $m['day_description'] ?? '—' }}</div>
+            <div class="mt-1" dir="auto"><strong>Логика:</strong> {{ $m['practical_logic'] ?? '—' }}</div>
+            <div class="mt-1 text-muted" dir="auto"><strong>Логистика/ZTL:</strong> {{ $m['logistics_and_ztl'] ?? '—' }}</div>
+          </div>
+        @endforeach
+      @elseif(!empty($rp['days']))
+        <hr class="my-2">
+        @foreach($rp['days'] as $d)
+          @if(!empty($d['note']))
+            <div class="mb-2">
+              <strong>День {{ $d['day_index'] ?? '?' }}</strong>
+              · stops {{ count($d['stops'] ?? []) }}
+              <div class="text-muted" dir="auto">{{ $d['note'] }}</div>
+            </div>
+          @endif
+        @endforeach
+      @endif
+    </div>
+  </div>
+@endif
+<div class="small text-muted mb-2 skeleton-reverse-one-status" style="display:none;"></div>
 
 <div class="skeleton-translate-ru-progress border rounded p-3 mb-3 bg-label-primary" style="display:none;">
   <div class="d-flex justify-content-between mb-1">
@@ -196,6 +289,29 @@
   }
 
   btn.addEventListener('click', run);
+})();
+
+(function () {
+  const btn = document.querySelector('.skeleton-reverse-one-btn');
+  const status = document.querySelector('.skeleton-reverse-one-status');
+  if (!btn) return;
+  btn.addEventListener('click', async function () {
+    if (!confirm('Снять принцип этого short route через Gemini?')) return;
+    btn.disabled = true;
+    if (status) { status.style.display = 'block'; status.textContent = 'Gemini разбирает…'; }
+    try {
+      const res = await fetch(btn.dataset.url, {
+        method: 'POST',
+        headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': btn.dataset.csrf, 'X-Requested-With': 'XMLHttpRequest' },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.message || ('HTTP ' + res.status));
+      location.reload();
+    } catch (e) {
+      if (status) status.textContent = 'Ошибка: ' + (e.message || e);
+      btn.disabled = false;
+    }
+  });
 })();
 </script>
 @endsection

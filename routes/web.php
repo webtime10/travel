@@ -16,6 +16,8 @@ use App\Http\Controllers\Admin\ManufacturerController;
 use App\Http\Controllers\Admin\ProductController;
 use App\Http\Controllers\Admin\ProductPipelineController;
 use App\Http\Controllers\Admin\RoleController;
+use App\Http\Controllers\Admin\FtShortRouteController;
+use App\Http\Controllers\Admin\NewShortRouteController;
 use App\Http\Controllers\Admin\RouteSkeletonController;
 use App\Http\Controllers\Admin\SavedRouteController;
 use App\Http\Controllers\Admin\TestController;
@@ -60,6 +62,7 @@ Route::prefix('admin')
         Route::post('test/scenario/audit', [TestController::class, 'scenarioAudit'])->name('test.scenario.audit');
         Route::get('test/chain', [TestController::class, 'chain'])->name('test.chain');
         Route::post('test/chain/run', [TestController::class, 'chainRun'])->name('test.chain.run');
+        Route::get('test/engineering-test', [TestController::class, 'engineeringTest'])->name('test.engineering');
         Route::post('test/prompt', [TestController::class, 'savePrompt'])->name('test.prompt.save');
 
         Route::get('products/pipeline/status', [ProductPipelineController::class, 'status'])->name('products.pipeline.status');
@@ -80,6 +83,9 @@ Route::prefix('admin')
         Route::get('locations/facts-pipeline/status', [LocationController::class, 'factsPipelineStatus'])->name('locations.facts-pipeline.status');
         Route::post('locations/facts-pipeline/start', [LocationController::class, 'factsPipelineStart'])->name('locations.facts-pipeline.start');
         Route::post('locations/facts-pipeline/cancel', [LocationController::class, 'factsPipelineCancel'])->name('locations.facts-pipeline.cancel');
+        Route::get('locations/passport-tags-pipeline/status', [LocationController::class, 'passportTagsPipelineStatus'])->name('locations.passport-tags-pipeline.status');
+        Route::post('locations/passport-tags-pipeline/start', [LocationController::class, 'passportTagsPipelineStart'])->name('locations.passport-tags-pipeline.start');
+        Route::post('locations/passport-tags-pipeline/cancel', [LocationController::class, 'passportTagsPipelineCancel'])->name('locations.passport-tags-pipeline.cancel');
         Route::get('locations/vector-pipeline/status', [LocationController::class, 'vectorPipelineStatus'])->name('locations.vector-pipeline.status');
         Route::post('locations/vector-pipeline/start', [LocationController::class, 'vectorPipelineStart'])->name('locations.vector-pipeline.start');
         Route::post('locations/vector-pipeline/cancel', [LocationController::class, 'vectorPipelineCancel'])->name('locations.vector-pipeline.cancel');
@@ -94,6 +100,7 @@ Route::prefix('admin')
         Route::post('locations/{location}/translate-ru', [LocationController::class, 'translateRu'])->name('locations.translate-ru');
         Route::post('locations/{location}/translate-facts-ru', [LocationController::class, 'translateFactsRu'])->name('locations.translate-facts-ru');
         Route::post('locations/{location}/split-facts', [LocationController::class, 'splitFacts'])->name('locations.split-facts');
+        Route::post('locations/{location}/passport-tags', [LocationController::class, 'extractPassportTags'])->name('locations.passport-tags');
         Route::post('locations/{location}/facts', [LocationController::class, 'factStore'])->name('locations.facts.store');
         Route::put('locations/{location}/facts/{fact}', [LocationController::class, 'factUpdate'])->name('locations.facts.update');
         Route::delete('locations/{location}/facts/{fact}', [LocationController::class, 'factDestroy'])->name('locations.facts.destroy');
@@ -103,9 +110,43 @@ Route::prefix('admin')
         Route::post('areas/{area}/assign-locations', [AreaController::class, 'assignLocations'])->name('areas.assign-locations');
         Route::resource('areas', AreaController::class)->except(['show']);
 
+        Route::get('new-short-routes', [NewShortRouteController::class, 'index'])->name('new-short-routes.index');
+        Route::post('new-short-routes/scan', [NewShortRouteController::class, 'scan'])->name('new-short-routes.scan');
+        Route::post('new-short-routes/gemini-overnights-batch', [NewShortRouteController::class, 'geminiOvernightsBatch'])->name('new-short-routes.gemini-overnights-batch');
+        Route::post('new-short-routes/translate-ru-batch', [NewShortRouteController::class, 'translateRuBatch'])->name('new-short-routes.translate-ru-batch');
+        Route::get('new-short-routes/vector-pipeline/status', [NewShortRouteController::class, 'vectorPipelineStatus'])->name('new-short-routes.vector-pipeline.status');
+        Route::post('new-short-routes/vector-pipeline/start', [NewShortRouteController::class, 'vectorPipelineStart'])->name('new-short-routes.vector-pipeline.start');
+        Route::post('new-short-routes/vector-pipeline/cancel', [NewShortRouteController::class, 'vectorPipelineCancel'])->name('new-short-routes.vector-pipeline.cancel');
+        Route::get('new-short-routes/{new_short_route}', [NewShortRouteController::class, 'show'])->name('new-short-routes.show');
+        Route::post('new-short-routes/{new_short_route}/translate-ru', [NewShortRouteController::class, 'translateRu'])->name('new-short-routes.translate-ru');
+        Route::post('new-short-routes/{new_short_route}/rescan', [NewShortRouteController::class, 'rescanOne'])->name('new-short-routes.rescan');
+        Route::post('new-short-routes/{new_short_route}/save-days', [NewShortRouteController::class, 'saveDays'])->name('new-short-routes.save-days');
+        Route::post('new-short-routes/{new_short_route}/gemini-overnights', [NewShortRouteController::class, 'geminiOvernights'])->name('new-short-routes.gemini-overnights');
+        Route::delete('new-short-routes/{new_short_route}', [NewShortRouteController::class, 'destroy'])->name('new-short-routes.destroy');
+
+        Route::get('ft-short-routes', [FtShortRouteController::class, 'index'])->name('ft-short-routes.index');
+        Route::post('ft-short-routes/build-batch', [FtShortRouteController::class, 'buildBatch'])->name('ft-short-routes.build-batch');
+        Route::post('ft-short-routes/translate-ru-batch', [FtShortRouteController::class, 'translateRuBatch'])->name('ft-short-routes.translate-ru-batch');
+        Route::post('ft-short-routes/reverse-prompt', [FtShortRouteController::class, 'saveReversePrompt'])->name('ft-short-routes.reverse-prompt.save');
+        Route::post('ft-short-routes/reverse-prompt/reset', [FtShortRouteController::class, 'resetReversePrompt'])->name('ft-short-routes.reverse-prompt.reset');
+        Route::get('ft-short-routes/{ft_short_route}', [FtShortRouteController::class, 'show'])->name('ft-short-routes.show');
+        Route::post('ft-short-routes/{ft_short_route}/rebuild', [FtShortRouteController::class, 'rebuildOne'])->name('ft-short-routes.rebuild');
+        Route::post('ft-short-routes/{ft_short_route}/translate-ru', [FtShortRouteController::class, 'translateRu'])->name('ft-short-routes.translate-ru');
+        Route::post('ft-short-routes/{ft_short_route}/reverse', [FtShortRouteController::class, 'reverseOne'])->name('ft-short-routes.reverse');
+        Route::delete('ft-short-routes/{ft_short_route}', [FtShortRouteController::class, 'destroy'])->name('ft-short-routes.destroy');
+
         Route::get('route-skeletons', [RouteSkeletonController::class, 'index'])->name('route-skeletons.index');
+        Route::get('route-skeletons/reverse-pipeline/status', [RouteSkeletonController::class, 'reversePipelineStatus'])->name('route-skeletons.reverse-pipeline.status');
+        Route::post('route-skeletons/reverse-pipeline/start', [RouteSkeletonController::class, 'reversePipelineStart'])->name('route-skeletons.reverse-pipeline.start');
+        Route::post('route-skeletons/reverse-pipeline/cancel', [RouteSkeletonController::class, 'reversePipelineCancel'])->name('route-skeletons.reverse-pipeline.cancel');
+        Route::post('route-skeletons/reverse-principles/clear', [RouteSkeletonController::class, 'clearReversePrinciples'])->name('route-skeletons.reverse-principles.clear');
+        Route::post('route-skeletons/reverse-prompt', [RouteSkeletonController::class, 'saveReversePrompt'])->name('route-skeletons.reverse-prompt.save');
+        Route::post('route-skeletons/reverse-prompt/reset', [RouteSkeletonController::class, 'resetReversePrompt'])->name('route-skeletons.reverse-prompt.reset');
+        Route::get('route-skeletons/export/finetune-jsonl', [RouteSkeletonController::class, 'exportFineTuneJsonl'])->name('route-skeletons.export.finetune-jsonl');
         Route::get('route-skeletons/{route_skeleton}', [RouteSkeletonController::class, 'show'])->name('route-skeletons.show');
         Route::post('route-skeletons/{route_skeleton}/translate-ru', [RouteSkeletonController::class, 'translateRu'])->name('route-skeletons.translate-ru');
+        Route::post('route-skeletons/{route_skeleton}/reverse', [RouteSkeletonController::class, 'reverseOne'])->name('route-skeletons.reverse');
+        Route::delete('route-skeletons/{route_skeleton}', [RouteSkeletonController::class, 'destroy'])->name('route-skeletons.destroy');
 
         Route::get('saved-routes', [SavedRouteController::class, 'index'])->name('saved-routes.index');
         Route::post('saved-routes', [SavedRouteController::class, 'store'])->name('saved-routes.store');
@@ -120,10 +161,14 @@ Route::prefix('admin')
         Route::post('golden-days/rebuild', [GoldenDayController::class, 'rebuild'])->name('golden-days.rebuild');
         Route::post('golden-days/translate-ru-batch', [GoldenDayController::class, 'translateRuBatch'])->name('golden-days.translate-ru-batch');
         Route::post('golden-days/sync-hub-labels', [GoldenDayController::class, 'syncHubLabels'])->name('golden-days.sync-hub-labels');
+        Route::get('golden-days/reverse-pipeline/status', [GoldenDayController::class, 'reversePipelineStatus'])->name('golden-days.reverse-pipeline.status');
+        Route::post('golden-days/reverse-pipeline/start', [GoldenDayController::class, 'reversePipelineStart'])->name('golden-days.reverse-pipeline.start');
+        Route::post('golden-days/reverse-pipeline/cancel', [GoldenDayController::class, 'reversePipelineCancel'])->name('golden-days.reverse-pipeline.cancel');
         Route::get('golden-days/{golden_day}', [GoldenDayController::class, 'show'])->name('golden-days.show');
         Route::put('golden-days/{golden_day}', [GoldenDayController::class, 'update'])->name('golden-days.update');
         Route::post('golden-days/{golden_day}/toggle', [GoldenDayController::class, 'toggle'])->name('golden-days.toggle');
         Route::post('golden-days/{golden_day}/translate-ru', [GoldenDayController::class, 'translateRu'])->name('golden-days.translate-ru');
+        Route::post('golden-days/{golden_day}/reverse', [GoldenDayController::class, 'reverseOne'])->name('golden-days.reverse');
         Route::post('golden-days/{golden_day}/labels', [GoldenDayController::class, 'syncLabels'])->name('golden-days.sync-labels');
         Route::post('golden-days/{golden_day}/stops', [GoldenDayController::class, 'storeStop'])->name('golden-days.stops.store');
         Route::post('golden-days/{golden_day}/stops/reorder', [GoldenDayController::class, 'reorderStops'])->name('golden-days.stops.reorder');

@@ -254,10 +254,11 @@ class RagDatabaseService
         }
 
         $wiped = $this->upgradeToLocationSchema();
+        $this->upgradeToNewShortSchema();
 
         DB::connection(self::CONNECTION)->table('rag_meta')->updateOrInsert(
             ['key' => 'schema_version'],
-            ['value' => '2', 'updated_at' => now(), 'created_at' => now()]
+            ['value' => '4-nsr', 'updated_at' => now(), 'created_at' => now()]
         );
         DB::connection(self::CONNECTION)->table('rag_meta')->updateOrInsert(
             ['key' => 'pgvector'],
@@ -419,6 +420,151 @@ class RagDatabaseService
                 && $schema->hasColumn('rag_documents', 'location_id');
         } catch (Throwable) {
             return false;
+        }
+    }
+
+    /**
+     * Отдельные таблицы под New Short (дни), без смешивания с локациями.
+     */
+    public function upgradeToNewShortSchema(): void
+    {
+        $schema = DB::connection(self::CONNECTION)->getSchemaBuilder();
+
+        if (! $schema->hasTable('nsr_documents')) {
+            $schema->create('nsr_documents', function ($table) {
+                $table->bigIncrements('id');
+                $table->unsignedBigInteger('new_short_route_id')->unique();
+                $table->string('doc_code', 32)->nullable()->index();
+                $table->string('source_file', 512)->nullable();
+                $table->string('language', 8)->default('ru');
+                $table->text('title')->nullable();
+                $table->unsignedInteger('days_count')->default(0);
+                $table->unsignedInteger('chunk_count')->default(0);
+                $table->timestampTz('indexed_at')->nullable();
+                $table->timestampsTz();
+            });
+        }
+
+        if (! $schema->hasTable('nsr_chunks')) {
+            $schema->create('nsr_chunks', function ($table) {
+                $table->bigIncrements('id');
+                $table->unsignedBigInteger('document_id')->index();
+                $table->unsignedBigInteger('new_short_route_id')->index();
+                $table->string('doc_code', 32)->nullable()->index();
+                $table->integer('chunk_index');
+                $table->integer('block_index')->nullable();
+                $table->string('block_type', 32)->nullable();
+                $table->unsignedInteger('day_index')->nullable();
+                $table->text('content');
+                $table->unsignedInteger('content_tokens')->nullable();
+                $table->jsonb('embedding')->nullable();
+                $table->string('embedding_model', 64)->nullable();
+                $table->unsignedInteger('embedding_dim')->nullable();
+                $table->jsonb('meta')->nullable();
+                $table->timestampsTz();
+                $table->unique(['document_id', 'chunk_index']);
+            });
+
+            try {
+                DB::connection(self::CONNECTION)->statement(
+                    'ALTER TABLE nsr_chunks
+                     ADD CONSTRAINT nsr_chunks_document_id_fkey
+                     FOREIGN KEY (document_id) REFERENCES nsr_documents(id) ON DELETE CASCADE'
+                );
+            } catch (Throwable) {
+            }
+        }
+
+        // Убрать тестовые New Short строки из общих rag_* (если были).
+        $this->cleanupNewShortFromSharedRag();
+    }
+
+    public function hasNewShortColumns(): bool
+    {
+        try {
+            $schema = DB::connection(self::CONNECTION)->getSchemaBuilder();
+
+            return $schema->hasTable('nsr_documents') && $schema->hasTable('nsr_chunks');
+        } catch (Throwable) {
+            return false;
+        }
+    }
+
+    /**
+     * @param  list<int>  $routeIds
+     * @return list<int>
+     */
+    public function indexedNewShortRouteIds(array $routeIds): array
+    {
+        $routeIds = array_values(array_filter(array_map('intval', $routeIds)));
+        if ($routeIds === [] || ! $this->hasNewShortColumns()) {
+            return [];
+        }
+
+        return DB::connection(self::CONNECTION)
+            ->table('nsr_documents')
+            ->whereIn('new_short_route_id', $routeIds)
+            ->where('chunk_count', '>', 0)
+            ->whereNotNull('indexed_at')
+            ->pluck('new_short_route_id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+    }
+
+    public function indexedNewShortRouteCount(): int
+    {
+        if (! $this->hasNewShortColumns()) {
+            return 0;
+        }
+
+        return (int) DB::connection(self::CONNECTION)
+            ->table('nsr_documents')
+            ->where('chunk_count', '>', 0)
+            ->whereNotNull('indexed_at')
+            ->count();
+    }
+
+    public function wipeNewShortDocuments(): int
+    {
+        if (! $this->hasNewShortColumns()) {
+            return 0;
+        }
+
+        try {
+            DB::connection(self::CONNECTION)->statement(
+                'TRUNCATE TABLE nsr_chunks, nsr_documents RESTART IDENTITY CASCADE'
+            );
+
+            return 1;
+        } catch (Throwable) {
+            DB::connection(self::CONNECTION)->table('nsr_chunks')->delete();
+
+            return (int) DB::connection(self::CONNECTION)->table('nsr_documents')->delete();
+        }
+    }
+
+    /** Старые New Short-строки в общих rag_documents / rag_chunks. */
+    private function cleanupNewShortFromSharedRag(): void
+    {
+        try {
+            $schema = DB::connection(self::CONNECTION)->getSchemaBuilder();
+            if (! $schema->hasTable('rag_documents') || ! $schema->hasColumn('rag_documents', 'new_short_route_id')) {
+                return;
+            }
+            $docIds = DB::connection(self::CONNECTION)
+                ->table('rag_documents')
+                ->whereNotNull('new_short_route_id')
+                ->pluck('id')
+                ->all();
+            if ($docIds === []) {
+                return;
+            }
+            DB::connection(self::CONNECTION)->table('rag_chunks')->whereIn('document_id', $docIds)->delete();
+            if ($schema->hasColumn('rag_chunks', 'new_short_route_id')) {
+                DB::connection(self::CONNECTION)->table('rag_chunks')->whereNotNull('new_short_route_id')->delete();
+            }
+            DB::connection(self::CONNECTION)->table('rag_documents')->whereNotNull('new_short_route_id')->delete();
+        } catch (Throwable) {
         }
     }
 

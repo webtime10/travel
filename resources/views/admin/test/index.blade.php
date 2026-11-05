@@ -81,5 +81,22 @@
       </div>
     </a>
   </div>
+  <div class="col-12 col-md-6">
+    <a href="{{ route('admin.test.engineering') }}" class="card h-100 text-decoration-none">
+      <div class="card-body">
+        <div class="d-flex align-items-start gap-3">
+          <span class="avatar avatar-md bg-label-dark rounded">
+            <i class="bx bx-layer bx-md"></i>
+          </span>
+          <div>
+            <h5 class="mb-1 text-body">Engineering test</h5>
+            <p class="mb-0 small text-muted">
+              Демо: коридоры → шаблоны → дни (ночёвка + id). Черновик до Engineering 2.
+            </p>
+          </div>
+        </div>
+      </div>
+    </a>
+  </div>
 </div>
 @endsection

@@ -35,6 +35,19 @@
     </button>
     <button
       type="button"
+      class="btn btn-outline-primary passport-tags-pipeline-start-btn"
+      title="Gemini: разбить все локации без меток (ночёвка / дети / кошер / часы). Текст не удаляется."
+      data-url="{{ route('admin.locations.passport-tags-pipeline.start') }}"
+      data-cancel-url="{{ route('admin.locations.passport-tags-pipeline.cancel') }}"
+      data-status-url="{{ route('admin.locations.passport-tags-pipeline.status') }}"
+      data-csrf="{{ csrf_token() }}"
+      data-pending="{{ (int) ($passportTagsPending ?? 0) }}"
+    >
+      <i class="bx bx-tag me-1"></i> Метки
+      <span class="badge bg-label-dark ms-1">{{ (int) ($passportTagsPending ?? 0) }}</span>
+    </button>
+    <button
+      type="button"
       class="btn btn-outline-success vector-pipeline-start-btn"
       title="Положить места в вектор (только ещё не прогнанные)"
       data-url="{{ route('admin.locations.vector-pipeline.start') }}"
@@ -79,6 +92,21 @@
   </div>
   <div class="small text-muted ru-content-pipeline-status">—</div>
   <div class="small text-danger ru-content-pipeline-error mt-1" style="display:none;"></div>
+</div>
+
+<div class="passport-tags-pipeline-progress border rounded p-3 mb-3 bg-light" style="display:none;">
+  <div class="d-flex align-items-center justify-content-between gap-2 mb-2 flex-wrap">
+    <div class="fw-semibold passport-tags-pipeline-label">Метки паспорта (Gemini)</div>
+    <div class="d-flex align-items-center gap-2">
+      <div class="fw-bold passport-tags-pipeline-pct">0%</div>
+      <button type="button" class="btn btn-sm btn-outline-secondary passport-tags-pipeline-cancel-btn">Стоп</button>
+    </div>
+  </div>
+  <div class="progress mb-2" style="height:1rem;">
+    <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary passport-tags-pipeline-bar" role="progressbar" style="width:0%"></div>
+  </div>
+  <div class="small text-muted passport-tags-pipeline-status">—</div>
+  <div class="small text-danger passport-tags-pipeline-error mt-1" style="display:none;"></div>
 </div>
 
 <div class="vector-pipeline-progress border rounded p-3 mb-3 bg-light" style="display:none;">
@@ -425,6 +453,17 @@
     err: '.ru-content-pipeline-error',
     cancel: '.ru-content-pipeline-cancel-btn',
     confirm: 'Перевести содержимое {n} локаций (тексты/часы/факты, ссылки без изменений)? Долго. Нужен worker: php artisan queue:work',
+  });
+
+  bindRuPipeline({
+    btn: '.passport-tags-pipeline-start-btn',
+    box: '.passport-tags-pipeline-progress',
+    pct: '.passport-tags-pipeline-pct',
+    bar: '.passport-tags-pipeline-bar',
+    status: '.passport-tags-pipeline-status',
+    err: '.passport-tags-pipeline-error',
+    cancel: '.passport-tags-pipeline-cancel-btn',
+    confirm: 'Разбить на метки {n} локаций без паспорта (Gemini)? Текст не трогаем. Нужен worker: php artisan queue:work',
   });
 
   (function () {

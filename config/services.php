@@ -38,8 +38,12 @@ return [
     'gemini' => [
         'key' => env('GEMINI_API_KEY'),
         'model' => env('GEMINI_MODEL', 'gemini-3.6-flash'),
+        'fallback_model' => env('GEMINI_FALLBACK_MODEL', 'gemini-3.5-flash-lite'),
         'chat_timeout' => (int) env('GEMINI_CHAT_TIMEOUT', 900),
         'pipeline_delay_seconds' => (int) env('GEMINI_PIPELINE_DELAY_SECONDS', 8),
+        // New Short RAG (free-tier): пауза между маршрутами; 0 = взять pipeline_delay_seconds.
+        'nsr_pipeline_delay_seconds' => (int) env('GEMINI_NSR_PIPELINE_DELAY_SECONDS', 20),
+        'nsr_rate_limit_cooldown_seconds' => (int) env('GEMINI_NSR_RATE_LIMIT_COOLDOWN_SECONDS', 90),
         'embedding_model' => env('GEMINI_EMBEDDING_MODEL', 'gemini-embedding-001'),
         'embedding_batch' => (int) env('GEMINI_EMBEDDING_BATCH', 40),
         'embedding_dimensions' => (int) env('GEMINI_EMBEDDING_DIMENSIONS', 768),

@@ -9,9 +9,12 @@ use App\Models\GoldenDayStop;
 use App\Models\GoldenLabel;
 use App\Models\Language;
 use App\Models\Location;
+use App\Jobs\ReverseEngineerGoldenDayJob;
 use App\Services\GoldenDayBuilder;
 use App\Services\GoldenDayLabelSync;
+use App\Services\GoldenDayReverseEngineer;
 use App\Services\GoldenDayRuTranslator;
+use App\Services\ReverseEngineeringPipelineStore;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -69,6 +72,15 @@ class GoldenDayController extends Controller
 
         $days = $query->paginate(50)->withQueryString();
 
+        $reversePendingQuery = GoldenDay::query()->whereNull('reverse_tags');
+        if ($country === 'UA') {
+            $reversePendingQuery->where('signature', 'like', 'ua-gd-%');
+        } elseif ($country === 'IT') {
+            $reversePendingQuery->where(function ($w) {
+                $w->whereNull('signature')->orWhere('signature', 'not like', 'ua-gd-%');
+            });
+        }
+
         return view('admin.golden_days.index', [
             'pageTitle' => 'Golden days · '.($country === 'ALL' ? 'All' : $country),
             'days' => $days,
@@ -77,8 +89,72 @@ class GoldenDayController extends Controller
             'country' => $country,
             'regionOptions' => $regionOptions,
             'pendingRu' => $translator->countPendingDays(),
+            'reversePending' => $reversePendingQuery->count(),
             'defaultLanguage' => Language::admin(),
         ]);
+    }
+
+    public function reversePipelineStatus(): JsonResponse
+    {
+        $pipeline = ReverseEngineeringPipelineStore::for('golden_days');
+
+        return response()->json($pipeline->status() + [
+            'not_tagged' => GoldenDay::whereNull('reverse_tags')->count(),
+        ]);
+    }
+
+    public function reversePipelineStart(Request $request): JsonResponse
+    {
+        $pipeline = ReverseEngineeringPipelineStore::for('golden_days');
+        if ($pipeline->running()) {
+            return response()->json(['ok' => false, 'message' => 'Обратный разбор уже идёт'], 409);
+        }
+
+        $country = strtoupper(trim((string) $request->input('country', 'ALL')));
+        $query = GoldenDay::query()->whereNull('reverse_tags')->orderBy('id');
+        if ($country === 'UA') {
+            $query->where('signature', 'like', 'ua-gd-%');
+        } elseif ($country === 'IT') {
+            $query->where(function ($w) {
+                $w->whereNull('signature')->orWhere('signature', 'not like', 'ua-gd-%');
+            });
+        }
+
+        $ids = $query->pluck('id')->all();
+        if ($ids === []) {
+            return response()->json(['ok' => true, 'started' => 0, 'message' => 'Все golden days уже с разбором']);
+        }
+
+        $pipeline->begin($ids);
+        $first = $pipeline->shift();
+        if ($first !== null) {
+            ReverseEngineerGoldenDayJob::dispatch($first);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'started' => count($ids),
+            'message' => 'Обратный разбор golden days: '.count($ids).' (нужен queue:work)',
+        ]);
+    }
+
+    public function reversePipelineCancel(): JsonResponse
+    {
+        ReverseEngineeringPipelineStore::for('golden_days')->cancel();
+
+        return response()->json(['ok' => true, 'message' => 'Остановлено']);
+    }
+
+    public function reverseOne(GoldenDay $golden_day, GoldenDayReverseEngineer $engineer): JsonResponse
+    {
+        @set_time_limit(600);
+        try {
+            $result = $engineer->extract($golden_day->load('stops.location'));
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'message' => $e->getMessage()], 500);
+        }
+
+        return response()->json(['ok' => true] + $result);
     }
 
     /**

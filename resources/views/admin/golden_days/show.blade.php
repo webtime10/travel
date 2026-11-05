@@ -22,6 +22,12 @@
             data-reload="{{ route('admin.golden-days.show', [$item, 'lang' => 'ru']) }}">
       <i class="bx bx-globe me-1"></i> Перевод на русский
     </button>
+    <button type="button"
+            class="btn btn-outline-warning golden-reverse-one-btn"
+            data-url="{{ route('admin.golden-days.reverse', $item) }}"
+            data-csrf="{{ csrf_token() }}">
+      <i class="bx bx-search-alt me-1"></i> Обратный разбор
+    </button>
     <form action="{{ route('admin.golden-days.toggle', $item) }}" method="post">
       @csrf
       <button type="submit" class="btn btn-outline-secondary">{{ $item->is_active ? 'Deactivate' : 'Activate' }}</button>
@@ -57,7 +63,38 @@
 @php
   $metaKind = (string) data_get($item->meta, 'kind', '');
   $metaLoad = (string) data_get($item->meta, 'load', '');
+  $rt = is_array($item->reverse_tags) ? $item->reverse_tags : null;
 @endphp
+@if($rt && empty($rt['skipped']))
+  <div class="card mb-3 border-warning">
+    <div class="card-header">Обратный разбор · метки дня</div>
+    <div class="card-body small">
+      <div class="mb-2"><strong>Принцип:</strong> {{ $rt['principle'] ?? '—' }}</div>
+      <div class="d-flex flex-wrap gap-3 text-muted mb-2">
+        <span>аудитория: {{ $rt['audience'] ?? '—' }}</span>
+        <span>дети: {{ $rt['kids'] ?? '—' }}</span>
+        <span>кошер: {{ $rt['kosher'] ?? '—' }}</span>
+        <span>подвижность: {{ $rt['mobility'] ?? '—' }}</span>
+        <span>нагрузка: {{ $rt['day_load'] ?? '—' }}</span>
+        <span>уверенность: {{ $rt['confidence'] ?? '—' }}</span>
+      </div>
+      @if(!empty($rt['order_reason']))
+        <div><strong>Порядок:</strong> {{ $rt['order_reason'] }}</div>
+      @endif
+      @if(!empty($rt['geo_link_reason']))
+        <div class="mt-1"><strong>Связь точек:</strong> {{ $rt['geo_link_reason'] }}</div>
+      @endif
+      @if(!empty($rt['label_slugs']))
+        <div class="mt-2">
+          @foreach($rt['label_slugs'] as $slug)
+            <span class="badge bg-label-secondary">{{ $slug }}</span>
+          @endforeach
+        </div>
+      @endif
+    </div>
+  </div>
+@endif
+<div class="small text-muted mb-2 golden-reverse-one-status" style="display:none;"></div>
 <div class="card mb-3" id="gd-edit">
   <div class="card-header d-flex justify-content-between align-items-center">
     <span>Редактировать день</span>
@@ -671,6 +708,29 @@
       label.textContent = 'Ошибка';
       status.textContent = e.message || String(e);
     } finally {
+      btn.disabled = false;
+    }
+  });
+})();
+
+(function () {
+  const btn = document.querySelector('.golden-reverse-one-btn');
+  const status = document.querySelector('.golden-reverse-one-status');
+  if (!btn) return;
+  btn.addEventListener('click', async function () {
+    if (!confirm('Обратный разбор этого дня через Gemini (метки + принцип)?')) return;
+    btn.disabled = true;
+    if (status) { status.style.display = 'block'; status.textContent = 'Gemini разбирает день…'; }
+    try {
+      const res = await fetch(btn.dataset.url, {
+        method: 'POST',
+        headers: { 'Accept': 'application/json', 'X-CSRF-TOKEN': btn.dataset.csrf, 'X-Requested-With': 'XMLHttpRequest' },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.message || ('HTTP ' + res.status));
+      location.reload();
+    } catch (e) {
+      if (status) status.textContent = 'Ошибка: ' + (e.message || e);
       btn.disabled = false;
     }
   });

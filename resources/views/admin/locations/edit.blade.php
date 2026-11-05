@@ -17,6 +17,7 @@
     </form>
   </div>
 </div>
+@include('admin.locations._passport_tags')
 @include('admin.locations._facts')
 @include('admin.locations._flexible')
 <script>

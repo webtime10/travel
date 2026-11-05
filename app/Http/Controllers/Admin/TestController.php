@@ -94,6 +94,172 @@ class TestController extends Controller
     }
 
     /**
+     * Mock «Engineering test»: corridors → templates → days (demo data, no DB write).
+     */
+    public function engineeringTest(Request $request)
+    {
+        $corridors = $this->engineeringTestMockData();
+        $corridorKey = (string) $request->query('corridor', $corridors[0]['key'] ?? 'rome');
+        $templateId = (int) $request->query('template', 0);
+
+        $corridor = collect($corridors)->firstWhere('key', $corridorKey) ?? $corridors[0];
+        $templates = $corridor['templates'] ?? [];
+        if ($templateId <= 0 && $templates !== []) {
+            $templateId = (int) ($templates[0]['id'] ?? 0);
+        }
+        $template = collect($templates)->firstWhere('id', $templateId) ?? ($templates[0] ?? null);
+
+        return view('admin.test.engineering_test', [
+            'pageTitle' => 'Engineering test',
+            'corridors' => $corridors,
+            'corridor' => $corridor,
+            'templates' => $templates,
+            'template' => $template,
+            'testMode' => 'engineering',
+        ]);
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function engineeringTestMockData(): array
+    {
+        return [
+            [
+                'key' => 'rome',
+                'name' => 'Рим',
+                'hubs' => ['Рим', 'Остия', 'Тиволи', 'Фраскати'],
+                'note' => 'Как «Одесская область»: один коридор, три коротких шаблона; длинный запрос склеивает дни',
+                'templates' => [
+                    [
+                        'id' => 101,
+                        'name' => 'Рим → Остия 4 дня',
+                        'days_count' => 4,
+                        'season' => 'лето',
+                        'audience' => 'семья',
+                        'source_route_ids' => [4090],
+                        'matched' => 8,
+                        'days' => [
+                            ['day_index' => 0, 'overnight' => 'Рим', 'location_ids' => [765], 'title' => 'Заезд в Рим', 'optional' => false],
+                            ['day_index' => 1, 'overnight' => 'Рим', 'location_ids' => [1008, 1009], 'title' => 'Центр Рима', 'optional' => false],
+                            ['day_index' => 2, 'overnight' => 'Остия', 'location_ids' => [1401], 'title' => 'Переезд Остия', 'optional' => false],
+                            ['day_index' => 3, 'overnight' => 'Остия', 'location_ids' => [1402], 'title' => 'Остия / море', 'optional' => false],
+                        ],
+                    ],
+                    [
+                        'id' => 102,
+                        'name' => 'Рим → Тиволи 4 дня',
+                        'days_count' => 4,
+                        'season' => 'весна–осень',
+                        'audience' => 'взрослые',
+                        'source_route_ids' => [4084],
+                        'matched' => 5,
+                        'days' => [
+                            ['day_index' => 0, 'overnight' => 'Рим', 'location_ids' => [765], 'title' => 'Рим старт', 'optional' => false],
+                            ['day_index' => 1, 'overnight' => 'Рим', 'location_ids' => [1015], 'title' => 'Рим · общая точка', 'optional' => false],
+                            ['day_index' => 2, 'overnight' => 'Тиволи', 'location_ids' => [378], 'title' => 'Переезд Тиволи', 'optional' => false],
+                            ['day_index' => 3, 'overnight' => 'Тиволи', 'location_ids' => [379], 'title' => 'Тиволи / виллы', 'optional' => false],
+                        ],
+                    ],
+                    [
+                        'id' => 103,
+                        'name' => 'Рим → Фраскати 4 дня',
+                        'days_count' => 4,
+                        'season' => 'весна–осень',
+                        'audience' => 'взрослые',
+                        'source_route_ids' => [4102],
+                        'matched' => 4,
+                        'days' => [
+                            ['day_index' => 0, 'overnight' => 'Рим', 'location_ids' => [765], 'title' => 'Рим старт', 'optional' => false],
+                            ['day_index' => 1, 'overnight' => 'Рим', 'location_ids' => [1015], 'title' => 'Рим · общая точка', 'optional' => false],
+                            ['day_index' => 2, 'overnight' => 'Фраскати', 'location_ids' => [1410], 'title' => 'Переезд Фраскати', 'optional' => false],
+                            ['day_index' => 3, 'overnight' => 'Фраскати', 'location_ids' => [1411], 'title' => 'Фраскати / Castelli', 'optional' => false],
+                        ],
+                    ],
+                ],
+            ],
+            [
+                'key' => 'mykolaiv',
+                'name' => 'Николаевская область',
+                'hubs' => ['Николаев', 'Вознесенск', 'Южноукраинск'],
+                'note' => 'Демо: область = коридор; города внутри = ночёвки / дни',
+                'templates' => [
+                    [
+                        'id' => 201,
+                        'name' => 'Вознесенск 5 дней',
+                        'days_count' => 5,
+                        'season' => 'любой',
+                        'audience' => 'семья',
+                        'source_route_ids' => [2201, 2203],
+                        'matched' => 7,
+                        'days' => [
+                            ['day_index' => 0, 'overnight' => 'Вознесенск', 'location_ids' => [1201], 'title' => 'Заезд Вознесенск', 'optional' => false],
+                            ['day_index' => 1, 'overnight' => 'Вознесенск', 'location_ids' => [1202, 1203], 'title' => 'Город + окрестности', 'optional' => false],
+                            ['day_index' => 2, 'overnight' => 'Вознесенск', 'location_ids' => [1204], 'title' => 'Лёгкий день (опция)', 'optional' => true],
+                            ['day_index' => 3, 'overnight' => 'Южноукраинск', 'location_ids' => [1210], 'title' => 'День в Южноукраинске', 'optional' => false],
+                            ['day_index' => 4, 'overnight' => 'Вознесенск', 'location_ids' => [1205], 'title' => 'Возврат / отъезд', 'optional' => false],
+                        ],
+                    ],
+                    [
+                        'id' => 202,
+                        'name' => 'Николаев 4 дня (город)',
+                        'days_count' => 4,
+                        'season' => 'любой',
+                        'audience' => 'взрослые',
+                        'source_route_ids' => [2210],
+                        'matched' => 5,
+                        'days' => [
+                            ['day_index' => 0, 'overnight' => 'Николаев', 'location_ids' => [1220], 'title' => 'Заезд Николаев', 'optional' => false],
+                            ['day_index' => 1, 'overnight' => 'Николаев', 'location_ids' => [1221, 1222], 'title' => 'Центр / набережная', 'optional' => false],
+                            ['day_index' => 2, 'overnight' => 'Николаев', 'location_ids' => [1223], 'title' => 'Район города', 'optional' => false],
+                            ['day_index' => 3, 'overnight' => 'Николаев', 'location_ids' => [1224], 'title' => 'Отъезд', 'optional' => false],
+                        ],
+                    ],
+                ],
+            ],
+            [
+                'key' => 'kyiv',
+                'name' => 'Киевская область',
+                'hubs' => ['Киев', 'Белая Церковь', 'Вышгород'],
+                'note' => 'Демо: Киев + область в одном коридоре',
+                'templates' => [
+                    [
+                        'id' => 301,
+                        'name' => 'Киев 5 дней',
+                        'days_count' => 5,
+                        'season' => 'любой',
+                        'audience' => 'семья / смешанно',
+                        'source_route_ids' => [2301, 2302],
+                        'matched' => 14,
+                        'days' => [
+                            ['day_index' => 0, 'overnight' => 'Киев', 'location_ids' => [1301], 'title' => 'Заезд Киев', 'optional' => false],
+                            ['day_index' => 1, 'overnight' => 'Киев', 'location_ids' => [1302, 1303], 'title' => 'Центр / крещатик', 'optional' => false],
+                            ['day_index' => 2, 'overnight' => 'Киев', 'location_ids' => [1304], 'title' => 'Правый / левый берег', 'optional' => false],
+                            ['day_index' => 3, 'overnight' => 'Киев', 'location_ids' => [1305], 'title' => 'Музеи / парк', 'optional' => false],
+                            ['day_index' => 4, 'overnight' => 'Киев', 'location_ids' => [1306], 'title' => 'Буфер / отъезд', 'optional' => false],
+                        ],
+                    ],
+                    [
+                        'id' => 302,
+                        'name' => 'Белая Церковь 4 дня',
+                        'days_count' => 4,
+                        'season' => 'весна–осень',
+                        'audience' => 'семья',
+                        'source_route_ids' => [2310],
+                        'matched' => 6,
+                        'days' => [
+                            ['day_index' => 0, 'overnight' => 'Белая Церковь', 'location_ids' => [1310], 'title' => 'Заезд Б. Церковь', 'optional' => false],
+                            ['day_index' => 1, 'overnight' => 'Белая Церковь', 'location_ids' => [1311, 1312], 'title' => 'Парк / город', 'optional' => false],
+                            ['day_index' => 2, 'overnight' => 'Белая Церковь', 'location_ids' => [1313], 'title' => 'Окрестности', 'optional' => false],
+                            ['day_index' => 3, 'overnight' => 'Белая Церковь', 'location_ids' => [1314], 'title' => 'Отъезд', 'optional' => false],
+                        ],
+                    ],
+                ],
+            ],
+        ];
+    }
+
+    /**
      * PHP slot assembler — Ukraine only (no Italy hubs/days).
      */
     public function phpMock()

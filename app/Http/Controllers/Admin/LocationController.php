@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\ExtractLocationPassportTagsJob;
 use App\Jobs\IndexLocationJob;
 use App\Jobs\SplitLocationFactsJob;
 use App\Jobs\TranslateLocationContentRuJob;
@@ -23,6 +24,8 @@ use App\Services\LocationFactChecker;
 use App\Services\LocationFactExtractor;
 use App\Services\LocationFactRuTranslator;
 use App\Services\LocationFactsPipelineStore;
+use App\Services\LocationPassportTagger;
+use App\Services\LocationPassportTagsPipelineStore;
 use App\Services\LocationRuPipelineStore;
 use App\Services\LocationRuTranslator;
 use App\Services\LocationVectorPipelineStore;
@@ -195,6 +198,7 @@ class LocationController extends Controller
 
         $ruNamePending = $this->pendingRuNameCount();
         $ruContentPending = $this->pendingRuContentCount();
+        $passportTagsPending = Location::whereNull('passport_tags')->count();
 
         return view('admin.locations.index', compact(
             'locations',
@@ -218,6 +222,7 @@ class LocationController extends Controller
             'areaNoneCount',
             'ruNamePending',
             'ruContentPending',
+            'passportTagsPending',
             'vectorIndexed',
             'vectorIndexedCount',
         ));
@@ -464,6 +469,23 @@ class LocationController extends Controller
         return response()->json(['ok' => true] + $result + ['status' => $check['status'], 'coverage' => $check['coverage'], 'repaired' => $check['repaired']]);
     }
 
+    /**
+     * Trial: Gemini → passport tags (overnight / kids / kosher / hours / mobility).
+     * Source Word text in meta is left untouched.
+     */
+    public function extractPassportTags(Location $location, LocationPassportTagger $tagger)
+    {
+        @set_time_limit(600);
+
+        try {
+            $result = $tagger->extract($location);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'message' => $e->getMessage()], 500);
+        }
+
+        return response()->json(['ok' => true] + $result);
+    }
+
     public function checkFacts(Location $location, LocationFactChecker $checker)
     {
         @set_time_limit(600);
@@ -505,6 +527,44 @@ class LocationController extends Controller
     }
 
     public function factsPipelineCancel(LocationFactsPipelineStore $pipeline)
+    {
+        $pipeline->cancel();
+
+        return response()->json(['ok' => true, 'message' => 'Остановлено']);
+    }
+
+    public function passportTagsPipelineStatus(LocationPassportTagsPipelineStore $pipeline)
+    {
+        return response()->json($pipeline->status() + [
+            'not_tagged' => Location::whereNull('passport_tags')->count(),
+        ]);
+    }
+
+    public function passportTagsPipelineStart(LocationPassportTagsPipelineStore $pipeline)
+    {
+        if ($pipeline->running()) {
+            return response()->json(['ok' => false, 'message' => 'Разбивка меток уже идёт'], 409);
+        }
+
+        $ids = Location::whereNull('passport_tags')->orderBy('id')->pluck('id')->all();
+        if ($ids === []) {
+            return response()->json(['ok' => true, 'message' => 'Все локации уже с метками (или пропущены)', 'started' => 0]);
+        }
+
+        $pipeline->begin($ids);
+        $first = $pipeline->shift();
+        if ($first !== null) {
+            ExtractLocationPassportTagsJob::dispatch($first);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'started' => count($ids),
+            'message' => 'Метки: запущено '.count($ids).' локаций (нужен queue:work)',
+        ]);
+    }
+
+    public function passportTagsPipelineCancel(LocationPassportTagsPipelineStore $pipeline)
     {
         $pipeline->cancel();
 

@@ -164,7 +164,13 @@
           <a href="{{ route('admin.index') }}" class="app-brand-link">
             <span class="app-brand-text demo menu-text fw-bold">Travel</span>
           </a>
-          @php $adminLangCode = \App\Models\Language::admin()?->code ?? 'he'; @endphp
+          @php
+            $adminLangCode = strtolower((string) (session('admin_lang', 'he') ?: 'he'));
+            if (! in_array($adminLangCode, ['he', 'ru'], true)) {
+              $adminLangCode = 'he';
+            }
+            app()->setLocale($adminLangCode);
+          @endphp
           <div class="d-flex align-items-center gap-1 small mb-1">
             <a href="{{ route('admin.lang', 'he') }}" class="{{ $adminLangCode === 'he' ? 'fw-bold text-primary' : 'text-muted' }}">he</a>
             <span class="text-muted">/</span>
@@ -228,6 +234,18 @@
           <a href="{{ route('admin.route-skeletons.index') }}" class="menu-link">
             <i class="menu-icon tf-icons bx bx-route"></i>
             <div>Short routes</div>
+          </a>
+        </li>
+        <li class="menu-item {{ request()->routeIs('admin.new-short-routes.*') ? 'active' : '' }}">
+          <a href="{{ route('admin.new-short-routes.index') }}" class="menu-link">
+            <i class="menu-icon tf-icons bx bx-file-blank"></i>
+            <div>New Short routes</div>
+          </a>
+        </li>
+        <li class="menu-item {{ request()->routeIs('admin.ft-short-routes.*') ? 'active' : '' }}">
+          <a href="{{ route('admin.ft-short-routes.index') }}" class="menu-link">
+            <i class="menu-icon tf-icons bx bx-brain"></i>
+            <div>{{ __('ft_short.menu') }}</div>
           </a>
         </li>
         <li class="menu-item {{ request()->routeIs('admin.saved-routes.*') ? 'active' : '' }}">
@@ -342,6 +360,11 @@
             <li class="menu-item {{ request()->routeIs('admin.test.chain*') ? 'active' : '' }}">
               <a href="{{ route('admin.test.chain') }}" class="menu-link">
                 <div>Gemini — 3 проверки</div>
+              </a>
+            </li>
+            <li class="menu-item {{ request()->routeIs('admin.test.engineering*') ? 'active' : '' }}">
+              <a href="{{ route('admin.test.engineering') }}" class="menu-link">
+                <div>Engineering test</div>
               </a>
             </li>
           </ul>
