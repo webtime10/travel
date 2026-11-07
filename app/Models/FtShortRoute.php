@@ -125,6 +125,11 @@ class FtShortRoute extends Model
     /** @param  array<string, mixed>  $rp */
     private function reversePrincipleIsHebrew(array $rp): bool
     {
+        // Пустой каркас (отказ/hollow) не считаем валидным HE-разбором.
+        if (FtShortRouteReverseEngineer::isHollowPrinciple($rp)) {
+            return false;
+        }
+
         $sample = FtShortRouteReverseEngineer::sampleText($rp);
         if ($sample === '') {
             return true;
@@ -138,6 +143,39 @@ class FtShortRoute extends Model
         }
 
         return true;
+    }
+
+    /**
+     * Снести разбор Gemini или Claude (HE + RU). Маршрут не трогает.
+     *
+     * @param  'gemini'|'claude'  $provider
+     */
+    public function clearReversePrinciple(string $provider = 'gemini'): void
+    {
+        $provider = strtolower(trim($provider)) === 'claude' ? 'claude' : 'gemini';
+
+        if ($provider === 'claude') {
+            $this->reverse_principle_claude = null;
+            $this->reverse_principle_claude_ru = null;
+            $meta = is_array($this->meta) ? $this->meta : [];
+            unset($meta['claude_ru_units']);
+            $this->meta = $meta === [] ? null : $meta;
+            $this->save();
+
+            return;
+        }
+
+        $this->reverse_principle = null;
+        $this->reverse_principle_ru = null;
+        $this->save();
+
+        $this->loadMissing('newShortRoute');
+        $nsr = $this->newShortRoute;
+        if ($nsr) {
+            $nsr->reverse_principle = null;
+            $nsr->reverse_principle_ru = null;
+            $nsr->save();
+        }
     }
 
     public function newShortRoute(): BelongsTo

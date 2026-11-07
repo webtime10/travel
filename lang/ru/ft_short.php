@@ -32,7 +32,7 @@ return [
     're_batch_translate' => 'Перевод #:id на русский…',
 
     'info_title' => 'FT Short — оригинал на иврите',
-    'info_body' => 'Основной вид: день N и места на иврите. Обратный разбор: открой строку → жёлтая кнопка «Получить обратный разбор» (ответ на иврите). New Short :nsr · FT :ft · RE :re · без RU :noru.',
+    'info_body' => 'Обратный разбор (Gemini/Claude): в модель уходят «Маршрут (как есть)» + «Текст Word (простыня)» из New Short (каркас days не шлём). Результат в FT и в New Short. New Short :nsr · FT :ft · RE :re · без RU :noru.',
 
     'prompt_title' => 'Промпт обратного разбора (русский → ответ на иврите)',
     'prompt_hint' => 'Промпт на русском: «Сохранить» — твой текст в БД (уйдёт в Gemini), «Сброс» — вернуть заводской. Метку LANGUAGE_* можно удалить — на работу не влияет. Ответ модели — на иврите. Разбор: строка → жёлтая кнопка.',
@@ -44,6 +44,21 @@ return [
     'prompt_reset_confirm' => 'Вернуть промпт к значению по умолчанию?',
     'prompt_reset_ok' => 'Промпт сброшен',
     'prompt_empty' => 'Промпт пустой',
+
+    'manual_prompt_title' => 'Промпт для Gemini · ручная работа',
+    'manual_prompt_toggle' => 'открыть / закрыть',
+    'manual_prompt_hint' => 'Один промпт на все документы. Скопируй → в чат Gemini, вручную приложи Word → JSON вставь на карточке в «Сборка вручную».',
+    'manual_prompt_saved' => 'Ручной промпт сохранён',
+    'manual_prompt_reset_ok' => 'Ручной промпт сброшен',
+    'manual_prompt_reset_confirm' => 'Вернуть ручной промпт к значению по умолчанию?',
+    'manual_prompt_copied' => 'Скопировано в буфер',
+    'btn_copy' => 'Копировать',
+    'manual_paste_title' => 'Сборка вручную · JSON из Gemini',
+    'manual_paste_hint' => 'Вставь JSON-ответ из чата Gemini. Поля разбора (аудитория, макро, дни, FineTunes) заполнятся как после авто-кнопки.',
+    'manual_paste_ph' => '{ "trip_archetype": { ... }, "micro_clustering": [ ... ], "fine_tune": { ... } }',
+    'manual_json_empty' => 'JSON пустой',
+    'manual_json_saved' => 'JSON принят — разбор записан',
+    'btn_apply_json' => 'Применить JSON',
 
     'search' => 'Поиск',
     'search_ph' => 'код, название, день…',
@@ -66,6 +81,11 @@ return [
     'btn_parse_title' => 'Открыть карточку / разбор',
     'btn_open_he' => 'Открыть иврит',
     'btn_delete' => 'Удалить',
+    'btn_clear_re' => 'Очистить разбор',
+    'btn_clear_re_title' => 'Очистить разбор Gemini (иврит + русский). Маршрут останется.',
+    'btn_clear_re_claude_title' => 'Очистить разбор Claude (иврит + русский). Маршрут останется.',
+    'confirm_clear_re' => 'Очистить разбор (HE + RU)? Маршрут не удалится.',
+    're_cleared' => 'Разбор очищен (HE + RU)',
     'confirm_delete' => 'Удалить FT Short #:id?',
 
     'progress_build' => 'Сборка FT Short (иврит)',

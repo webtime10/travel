@@ -9,6 +9,8 @@
     : ($item->route_text ?: $item->toBriefText($showRu));
   $bodyText = $item->bodyForDisplay($showRu);
   $bodyChars = mb_strlen((string)($item->body_text ?? ''));
+  $hasRe = $item->hasReversePrinciple();
+  $rp = $item->reversePrincipleForDisplay($showRu) ?? $item->reversePrincipleForDisplay(false);
 @endphp
 <div class="d-flex justify-content-between align-items-start mb-4 flex-wrap gap-2">
   <div>
@@ -48,13 +50,22 @@
             data-reload="{{ route('admin.new-short-routes.show', [$item, 'lang' => 'ru']) }}">
       <i class="bx bx-globe me-1"></i> Перевод на русский
     </button>
+    <button type="button" class="btn btn-danger nsr-reverse-one-btn"
+            title="Обратный разбор: маршрут как есть + простыня Word → JSON"
+            data-url="{{ route('admin.new-short-routes.reverse', $item) }}"
+            data-csrf="{{ csrf_token() }}">
+      <i class="bx bx-search-alt me-1"></i> {{ $hasRe ? 'Пересобрать RE' : 'Получить RE' }}
+    </button>
   </div>
 </div>
 
 <div class="alert alert-info small mb-3">
-  Два слоя: <strong>1) маршрут как есть</strong> (сверху, для работы) ·
-  <strong>2) весь текст Word</strong> (снизу, для RAG).
+  В Gemini RE уходят: <strong>1) Маршрут (как есть)</strong> ·
+  <strong>2) Текст Word (простыня)</strong>. Каркас days не отправляем.
   Без авто-ночёвок и угаданных хабов. HE/RU — контент карточки; <code>he / ru</code> слева — язык меню.
+  @if($hasRe)
+    · <span class="badge bg-danger">RE готов</span>
+  @endif
 </div>
 
 <div class="nsr-status border rounded p-2 mb-3 bg-light small" style="display:none;"></div>
@@ -70,10 +81,10 @@
   </div>
 </div>
 
-{{-- 2. Полный текст Word → RAG --}}
+{{-- 2. Полный текст Word → RAG / RE --}}
 <div class="card mb-3 border-success">
   <div class="card-header d-flex justify-content-between align-items-center py-2">
-    <span class="fw-semibold"><i class="bx bx-file me-1"></i> Текст Word (для RAG) · {{ $hubLang }}</span>
+    <span class="fw-semibold"><i class="bx bx-file me-1"></i> Текст Word (простыня) · {{ $hubLang }}</span>
     <span class="small text-muted">{{ number_format($bodyChars) }} симв. · вся страница</span>
   </div>
   <div class="card-body">
@@ -81,6 +92,21 @@
       <pre class="mb-0 small" style="white-space:pre-wrap;max-height:28rem;overflow:auto" dir="auto">{{ $bodyText }}</pre>
     @else
       <div class="text-muted">Текста нет — нажмите «Перечитать Word».</div>
+    @endif
+  </div>
+</div>
+
+{{-- 3. Reverse engineering JSON --}}
+<div class="card mb-3 border-danger">
+  <div class="card-header d-flex justify-content-between align-items-center py-2">
+    <span class="fw-semibold"><i class="bx bx-brain me-1"></i> Обратный разбор (JSON)</span>
+    <span class="small text-muted">{{ $hasRe ? 'есть' : 'ещё нет' }}</span>
+  </div>
+  <div class="card-body">
+    @if(is_array($rp) && $rp !== [])
+      <pre class="mb-0 small bg-light border rounded p-3" style="white-space:pre-wrap;max-height:36rem;overflow:auto" dir="auto">{{ json_encode($rp, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT) }}</pre>
+    @else
+      <div class="text-muted">Нет разбора — нажмите «Получить RE» (в Gemini уйдут маршрут как есть + простыня).</div>
     @endif
   </div>
 </div>
@@ -124,34 +150,63 @@
   }
 
   const btn = document.querySelector('.nsr-translate-ru-btn');
-  if (!btn) return;
-  btn.addEventListener('click', async function () {
-    btn.disabled = true;
-    showStatus('Перевод…', true);
-    try {
-      let guard = 0;
-      while (guard++ < 40) {
-        const res = await fetch(btn.dataset.url, {
+  if (btn) {
+    btn.addEventListener('click', async function () {
+      btn.disabled = true;
+      showStatus('Перевод…', true);
+      try {
+        let guard = 0;
+        while (guard++ < 40) {
+          const res = await fetch(btn.dataset.url, {
+            method: 'POST',
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+              'X-CSRF-TOKEN': '{{ csrf_token() }}',
+              'X-Requested-With': 'XMLHttpRequest',
+            },
+            body: JSON.stringify({ limit: 20 }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok && !data.translated) throw new Error(data.message || ('HTTP ' + res.status));
+          if (data.done || !data.remaining) break;
+          if (data.warning && !data.translated) throw new Error(data.message || data.warning);
+        }
+        window.location.href = btn.dataset.reload;
+      } catch (e) {
+        showStatus(e.message || String(e), false);
+        btn.disabled = false;
+      }
+    });
+  }
+
+  const reBtn = document.querySelector('.nsr-reverse-one-btn');
+  if (reBtn) {
+    reBtn.addEventListener('click', async function () {
+      if (!confirm('Обратный разбор: маршрут как есть + простыня Word → JSON?\nМожет занять 1–3 минуты (paid Gemini).')) return;
+      reBtn.disabled = true;
+      showStatus('RE: маршрут как есть + простыня → Gemini…', true);
+      try {
+        const res = await fetch(reBtn.dataset.url, {
           method: 'POST',
           headers: {
             'Accept': 'application/json',
             'Content-Type': 'application/json',
-            'X-CSRF-TOKEN': '{{ csrf_token() }}',
+            'X-CSRF-TOKEN': reBtn.dataset.csrf,
             'X-Requested-With': 'XMLHttpRequest',
           },
-          body: JSON.stringify({ limit: 20 }),
+          body: JSON.stringify({ provider: 'gemini' }),
         });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok && !data.translated) throw new Error(data.message || ('HTTP ' + res.status));
-        if (data.done || !data.remaining) break;
-        if (data.warning && !data.translated) throw new Error(data.message || data.warning);
+        if (!res.ok) throw new Error(data.message || ('HTTP ' + res.status));
+        showStatus('RE готов — обновляю…', true);
+        window.location.reload();
+      } catch (e) {
+        showStatus(e.message || String(e), false);
+        reBtn.disabled = false;
       }
-      window.location.href = btn.dataset.reload;
-    } catch (e) {
-      showStatus(e.message || String(e), false);
-      btn.disabled = false;
-    }
-  });
+    });
+  }
 })();
 </script>
 @endsection

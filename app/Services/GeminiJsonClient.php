@@ -106,10 +106,47 @@ class GeminiJsonClient
                     }
 
                     if ($response->successful()) {
-                        return collect($response->json('candidates.0.content.parts', []))
-                            ->pluck('text')
-                            ->filter(fn ($t) => is_string($t))
+                        $blockReason = (string) ($response->json('promptFeedback.blockReason') ?? '');
+                        if ($blockReason !== '') {
+                            throw new RuntimeException(
+                                'Gemini blocked prompt ['.$model.']: '.$blockReason
+                            );
+                        }
+
+                        $finishReason = (string) ($response->json('candidates.0.finishReason') ?? '');
+                        $parts = collect($response->json('candidates.0.content.parts', []) ?: []);
+                        // Gemini 3: thinking parts have thought=true — в JSON ответа их не смешиваем.
+                        $text = $parts
+                            ->filter(static function ($part): bool {
+                                if (! is_array($part)) {
+                                    return false;
+                                }
+                                if (! empty($part['thought'])) {
+                                    return false;
+                                }
+
+                                return is_string($part['text'] ?? null) && trim((string) $part['text']) !== '';
+                            })
+                            ->map(static fn (array $part): string => (string) $part['text'])
                             ->implode("\n");
+
+                        if (trim($text) === '') {
+                            $last = 'Gemini empty answer ['.$model.']'
+                                .($finishReason !== '' ? ' finishReason='.$finishReason : '');
+                            if ($modelIndex < count($models) - 1) {
+                                break;
+                            }
+                            throw new RuntimeException($last);
+                        }
+
+                        if ($finishReason !== '' && ! in_array($finishReason, ['STOP', 'MAX_TOKENS'], true)) {
+                            $last = 'Gemini finishReason='.$finishReason.' ['.$model.']: '.mb_substr($text, 0, 200);
+                            if (in_array($finishReason, ['SAFETY', 'RECITATION', 'OTHER', 'BLOCKLIST'], true)) {
+                                throw new RuntimeException($last);
+                            }
+                        }
+
+                        return $text;
                     }
                     $status = $response->status();
                     $body = mb_substr($response->body(), 0, 400);

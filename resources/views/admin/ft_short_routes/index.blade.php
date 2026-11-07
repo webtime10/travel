@@ -89,6 +89,37 @@
   </div>
 </div>
 
+{{-- Промпт для ручной работы в чате Gemini — гармошка, по умолчанию свёрнута --}}
+<div class="card mb-3 border-info">
+  <div class="card-header py-2">
+    <a class="d-flex justify-content-between align-items-center text-decoration-none text-body"
+       data-bs-toggle="collapse" href="#ftManualPromptCollapse" role="button"
+       aria-expanded="false" aria-controls="ftManualPromptCollapse">
+      <span class="fw-semibold">
+        <i class="bx bx-chevron-down me-1"></i>
+        {{ __('ft_short.manual_prompt_title') }}
+      </span>
+      <span class="small text-muted">{{ __('ft_short.manual_prompt_toggle') }}</span>
+    </a>
+  </div>
+  <div id="ftManualPromptCollapse" class="collapse">
+    <div class="card-body pt-0">
+      <div class="small text-muted mb-2">{{ __('ft_short.manual_prompt_hint') }}</div>
+      <textarea id="ftManualPromptInput" class="form-control font-monospace" rows="12" spellcheck="false" dir="ltr">{{ $manualPrompt ?? '' }}</textarea>
+      <div class="d-flex flex-wrap align-items-center gap-2 mt-2 pt-2 border-top">
+        <span id="ftManualPromptStatus" class="small text-muted me-auto"></span>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="ftManualPromptCopy">
+          <i class="bx bx-copy me-1"></i> {{ __('ft_short.btn_copy') }}
+        </button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="ftManualPromptReset">{{ __('ft_short.btn_reset') }}</button>
+        <button type="button" class="btn btn-sm btn-primary" id="ftManualPromptSave" title="{{ __('ft_short.btn_save') }}">
+          <i class="bx bx-save me-1"></i> {{ __('ft_short.btn_save') }}
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <div class="card mb-3">
   <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
     <div>
@@ -262,6 +293,24 @@
               <a href="{{ route('admin.ft-short-routes.show', [$item, 'lang' => 'he', 'engine' => 'claude']) }}" class="btn btn-icon btn-sm btn-warning" title="{{ __('ft_short.btn_open_claude') }}">
                 <i class="bx bx-show"></i>
               </a>
+              @if($hasRe || $hasReRu)
+                <button type="button" class="btn btn-icon btn-sm btn-outline-secondary ft-clear-re-btn"
+                        title="{{ __('ft_short.btn_clear_re_title') }}"
+                        data-url="{{ route('admin.ft-short-routes.clear-reverse', $item) }}"
+                        data-provider="gemini"
+                        data-csrf="{{ csrf_token() }}">
+                  <i class="bx bx-eraser"></i>
+                </button>
+              @endif
+              @if($hasReClaude || $hasReClaudeRu)
+                <button type="button" class="btn btn-icon btn-sm btn-outline-warning ft-clear-re-btn"
+                        title="{{ __('ft_short.btn_clear_re_claude_title') }}"
+                        data-url="{{ route('admin.ft-short-routes.clear-reverse', $item) }}"
+                        data-provider="claude"
+                        data-csrf="{{ csrf_token() }}">
+                  <i class="bx bx-eraser"></i>
+                </button>
+              @endif
               <form action="{{ route('admin.ft-short-routes.destroy', $item) }}" method="post" class="d-inline"
                     onsubmit="return confirm(@json(__('ft_short.confirm_delete', ['id' => $item->id])));">
                 @csrf
@@ -321,6 +370,7 @@
     pipelineDone: @json(__('ft_short.pipeline_done')),
     pipelinePaused: @json(__('ft_short.pipeline_paused')),
     pipelineCancelled: @json(__('ft_short.pipeline_cancelled')),
+    confirmClearRe: @json(__('ft_short.confirm_clear_re')),
   };
 
   const progress = document.querySelector('.ft-build-progress');
@@ -676,6 +726,37 @@
 
   updateSelectionUi();
 
+  document.querySelectorAll('.ft-clear-re-btn').forEach(function (clearBtn) {
+    clearBtn.addEventListener('click', async function () {
+      if (!confirm(i18n.confirmClearRe)) return;
+      clearBtn.disabled = true;
+      try {
+        const res = await fetch(clearBtn.dataset.url, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': clearBtn.dataset.csrf || csrf,
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+          body: JSON.stringify({
+            provider: clearBtn.dataset.provider || 'gemini',
+            _token: clearBtn.dataset.csrf || csrf,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.message || ('HTTP ' + res.status));
+        }
+        window.location.reload();
+      } catch (e) {
+        alert(e.message || String(e));
+        clearBtn.disabled = false;
+      }
+    });
+  });
+
   const trBatch = document.querySelector('.ft-translate-batch-btn');
   if (trBatch) {
     const box = document.querySelector('.ft-translate-progress');
@@ -744,6 +825,84 @@
     });
   }
 
+  // Ручной промпт Gemini (гармошка)
+  const manualSaveUrl = @json(route('admin.ft-short-routes.manual-prompt.save'));
+  const manualResetUrl = @json(route('admin.ft-short-routes.manual-prompt.reset'));
+  const manualInput = document.getElementById('ftManualPromptInput');
+  const manualStatus = document.getElementById('ftManualPromptStatus');
+  const manualSave = document.getElementById('ftManualPromptSave');
+  const manualReset = document.getElementById('ftManualPromptReset');
+  const manualCopy = document.getElementById('ftManualPromptCopy');
+  if (manualCopy && manualInput) {
+    manualCopy.addEventListener('click', async function () {
+      try {
+        await navigator.clipboard.writeText(manualInput.value || '');
+        if (manualStatus) manualStatus.textContent = @json(__('ft_short.manual_prompt_copied'));
+      } catch (e) {
+        manualInput.focus();
+        manualInput.select();
+        if (manualStatus) manualStatus.textContent = e.message || String(e);
+      }
+    });
+  }
+  if (manualSave && manualInput) {
+    manualSave.addEventListener('click', async function () {
+      manualSave.disabled = true;
+      if (manualStatus) manualStatus.textContent = i18n.promptSaving;
+      try {
+        const res = await fetch(manualSaveUrl, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': csrf,
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+          body: JSON.stringify({ prompt: manualInput.value, _token: csrf }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.message || ('HTTP ' + res.status));
+        if (typeof data.prompt === 'string') manualInput.value = data.prompt;
+        if (manualStatus) {
+          manualStatus.textContent = (data.message || @json(__('ft_short.manual_prompt_saved')))
+            + (data.chars ? (' · ' + data.chars + ' симв.') : '');
+        }
+      } catch (e) {
+        if (manualStatus) manualStatus.textContent = e.message || String(e);
+      } finally {
+        manualSave.disabled = false;
+      }
+    });
+  }
+  if (manualReset && manualInput) {
+    manualReset.addEventListener('click', async function () {
+      if (!confirm(@json(__('ft_short.manual_prompt_reset_confirm')))) return;
+      manualReset.disabled = true;
+      try {
+        const res = await fetch(manualResetUrl, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': csrf,
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+          body: JSON.stringify({ _token: csrf }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.message || ('HTTP ' + res.status));
+        if (data.prompt) manualInput.value = data.prompt;
+        if (manualStatus) manualStatus.textContent = data.message || @json(__('ft_short.manual_prompt_reset_ok'));
+      } catch (e) {
+        if (manualStatus) manualStatus.textContent = e.message || String(e);
+      } finally {
+        manualReset.disabled = false;
+      }
+    });
+  }
+
   const promptSaveUrl = @json(route('admin.ft-short-routes.reverse-prompt.save'));
   const promptResetUrl = @json(route('admin.ft-short-routes.reverse-prompt.reset'));
   const promptInput = document.getElementById('ftReversePromptInput');
@@ -757,17 +916,25 @@
       try {
         const res = await fetch(promptSaveUrl, {
           method: 'POST',
+          credentials: 'same-origin',
           headers: {
             'Accept': 'application/json',
             'Content-Type': 'application/json',
             'X-CSRF-TOKEN': csrf,
             'X-Requested-With': 'XMLHttpRequest',
           },
-          body: JSON.stringify({ prompt: promptInput.value, lang: uiLang }),
+          body: JSON.stringify({ prompt: promptInput.value, lang: uiLang, _token: csrf }),
         });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.message || ('HTTP ' + res.status));
-        if (promptStatus) promptStatus.textContent = data.message || i18n.promptSaved;
+        if (!res.ok) {
+          const ve = data.errors && data.errors.prompt ? data.errors.prompt[0] : null;
+          throw new Error(ve || data.message || ('HTTP ' + res.status + (res.status === 419 ? ' (CSRF — обнови страницу)' : '')));
+        }
+        if (typeof data.prompt === 'string') promptInput.value = data.prompt;
+        if (promptStatus) {
+          promptStatus.textContent = (data.message || i18n.promptSaved)
+            + (data.chars ? (' · ' + data.chars + ' симв.') : '');
+        }
       } catch (e) {
         if (promptStatus) promptStatus.textContent = e.message || String(e);
       } finally {

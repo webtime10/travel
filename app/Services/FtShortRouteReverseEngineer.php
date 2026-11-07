@@ -23,6 +23,9 @@ class FtShortRouteReverseEngineer
     /** Единственный рабочий промпт (русский). */
     public const PROMPT_SETTING_KEY_RU = 'travel.reverse_engineer.ft_short_route_prompt_ru_v7';
 
+    /** Промпт для ручной работы в чате Gemini (копируешь → вставляешь JSON обратно). */
+    public const MANUAL_PROMPT_SETTING_KEY_RU = 'travel.reverse_engineer.ft_short_manual_prompt_ru_v1';
+
     public function __construct(
         private GeminiJsonClient $gemini,
         private ClaudeJsonClient $claude,
@@ -49,12 +52,11 @@ class FtShortRouteReverseEngineer
     {
         $stored = trim((string) AppSetting::getValue(self::PROMPT_SETTING_KEY_RU, ''));
 
-        // Ручное «Сохранить» — свято: если схема на месте, не затираем (метку LANGUAGE_* можно удалить).
+        // Ручное «Сохранить» — свято. Не переписываем и не «улучшаем» сохранённый текст.
         if ($stored !== ''
             && str_contains($stored, 'trip_archetype')
             && str_contains($stored, 'signature_wildcard')
             && str_contains($stored, 'fine_tune')
-            && ! self::promptNeedsForcedUpgrade($stored)
         ) {
             return $stored;
         }
@@ -65,26 +67,63 @@ class FtShortRouteReverseEngineer
         return $fresh;
     }
 
-    /** Старые заводские версии — один раз подтянуть дефолт. Свой сохранённый текст без LANGUAGE_* не трогаем. */
-    private static function promptNeedsForcedUpgrade(string $stored): bool
+    /**
+     * Если в сохранённом промпте нет инструкции про полный Word — вставить культурный блок SOURCE.
+     */
+    public static function ensureFullDocumentSourceBlock(string $prompt): string
     {
-        foreach ([
-            'LANGUAGE_HE_ONLY_V5',
-            'LANGUAGE_RU_UI_V5',
-            'LANGUAGE_RU_INSTR_HE_OUT_V5',
-            'LANGUAGE_RU_INSTR_HE_OUT_V6',
-        ] as $old) {
-            if (str_contains($stored, $old)) {
-                return true;
+        if (str_contains($prompt, 'full_word_body')) {
+            // Убрать разговорное «простыня», если осталось в старых дефолтах.
+            if (str_contains($prompt, 'простыню') || str_contains($prompt, 'простыня')) {
+                $prompt = str_replace(
+                    [
+                        'Не игнорируй простыню.',
+                        'Не игнорируй простыню',
+                        'простыню',
+                        'простыня',
+                    ],
+                    [
+                        'Не ограничивайся одним каркасом, если передан полный текст документа.',
+                        'Не ограничивайся одним каркасом, если передан полный текст документа',
+                        'полный текст документа',
+                        'полный текст документа',
+                    ],
+                    $prompt
+                );
             }
+
+            return $prompt;
         }
 
-        // Старая фраза, из‑за которой путали модель — принудительно обновить дефолт.
-        if (str_contains($stored, 'русский перевод сделает админка')) {
-            return true;
+        $block = self::fullDocumentSourceBlock();
+
+        // Вставить перед «Ответ — строго JSON», если есть; иначе перед схемой / в конец.
+        if (preg_match('/Ответ\s*—\s*строго JSON/u', $prompt)) {
+            return preg_replace(
+                '/Ответ\s*—\s*строго JSON/u',
+                $block."\nОтвет — строго JSON",
+                $prompt,
+                1
+            ) ?? ($prompt."\n\n".$block);
         }
 
-        return false;
+        if (str_contains($prompt, '{')) {
+            $pos = strpos($prompt, '{');
+
+            return rtrim(substr($prompt, 0, $pos))."\n\n".$block."\n\n".ltrim(substr($prompt, $pos));
+        }
+
+        return rtrim($prompt)."\n\n".$block;
+    }
+
+    public static function fullDocumentSourceBlock(): string
+    {
+        return <<<'BLOCK'
+Вход после --- SOURCE ---: JSON с двумя слоями исходника автора:
+- route_as_is — «Маршрут (как есть)» из карточки (текст маршрута целиком);
+- full_word_body — «Текст Word (простыня)» — полный текст Word-документа.
+Разбирай оба слоя. days / outline / каркас заголовков дней в SOURCE не используем и не ждём.
+BLOCK;
     }
 
     public static function defaultPrompt(): string
@@ -116,104 +155,29 @@ class FtShortRouteReverseEngineer
     }
 
     /**
-     * Единственный рабочий промпт: полный мастер на русском + ответ values на иврите.
-     * Показывается в админке и уходит в Gemini.
+     * Единственный рабочий промпт: директорский текст (без правок агента).
+     * Файл: resources/prompts/director_re_prompt_ru.txt
      */
     public static function defaultPromptRu(): string
     {
-        return <<<'PROMPT'
-LANGUAGE_RU_INSTR_HE_OUT_V7
-
-Мастер-Промпт Обратного Инжиниринга: Алгоритмизация Авторской Логики
-
-ЯЗЫК:
-Инструкция — на русском. Все строковые values в JSON — только на иврите (עברית בלבד).
-Ключи JSON — латиница. В values нет кириллицы и нет английских предложений.
-places_text в fine_tune — как во входе (SOURCE). Числа и true/false — как указано.
-
-Ты — ведущий системный архитектор туристических данных и эксперт по обратному инжинирингу авторских маршрутов.
-
-ЦЕЛЬ ТВОЕЙ РАБОТЫ:
-Проведи глубокий логистический и смысловой обратный инжиниринг предоставленного готового маршрута автора. Извлеки скрытый ход мыслей (Chain of Thought), строгие авторские правила отбора и архетипы решений, на которых этот маршрут был построен.
-Результат разбора напрямую поступает в обучающий датасет (Fine-Tuning) и реляционную базу данных, чтобы дообученная модель мыслила в точности как автор-эксперт.
-
-ЖЁСТКИЕ ПРАВИЛА АНАЛИЗА (Author's Operating DNA):
-1. Прагматизм и ноль литературной «воды»: объясняй решения через время в пути, физические силы, световой день и доступность инфраструктуры. Никаких «эмоциональных градиентов» и «философии дорог».
-2. Безоговорочный приоритет Вау-фактора: автор всегда предпочитает всемирно известные, ошеломляющие локации (Сирмионе, Брайес) серым и тихим аналогам (Пескьера, Доббьяко), даже если клиент просит «без людей».
-3. Формула дня: светлое время суток — 1–2 природных якоря или активности (озеро, подъёмник, водопад, рафтинг); вечер — атмосферный городок для променада и ужина. Городок может повторяться два вечера подряд, если база расположена рядом.
-4. Скоростная логистика: между регионами движение идёт строго по быстрым автострадам (Autostrada), без искусственных панорамных объездов. Съезды в сторону (30–60 мин) допустимы только ради супер-доминант (expert_score >= 90).
-5. Календарная защита: детские парки (Гардаленд и др.) и точки массового скопления никогда не ставятся на субботу и воскресенье.
-6. Парковки и ZTL: высокий сезон и риск штрафов ZTL не повод отказываться от жемчужин; город всегда комплектуется точной парковкой вне зоны камер.
-7. Авторский сюрприз (Wildcard): автор часто внедряет в стандартный набор 1–2 неочевидные точки (панорамная терраса, тайное ущелье), превосходящие ожидания туриста.
-8. Плотность без жалости: отсутствие пустых пауз; рабочий световой день длится 6–8 часов активного времени, а чистое вождение жёстко ограничено потолком в 4 часа в сутки (плечо радиального выезда — не более 2 часов в одну сторону).
-
-Вход после --- SOURCE ---: JSON (title, route_text, days). Ответ — строго JSON по схеме ниже.
-В схеме ниже подсказки полей на русском; заполняй values на иврите.
-
-{
-  "trip_archetype": {
-    "archetype_name": "название архетипа на иврите (напр. семья+Гарда / динамичная пара+Доломиты / соблюдающие)",
-    "target_profile": {
-      "group_composition": "состав группы — на иврите",
-      "pace_and_physical_load": "уровень активности — на иврите",
-      "cultural_bias": "культурный фильтр (по умолчанию 0 церквей/музеев) — на иврите",
-      "special_constraints": ["ограничения на иврите: шаббат, кашрут…"]
-    },
-    "potential_client_queries": [
-      "короткий эмоциональный запрос — на иврите",
-      "прагматичный с болями — на иврите",
-      "развёрнутый с рамками — на иврите"
-    ]
-  },
-  "macro_architecture": {
-    "topology": "Hub-and-Spoke или Linear Road-Trip",
-    "base_camps_logic": "почему базы и шаг смены — на иврите",
-    "highway_transit_strategy": "длинные переезды / Autostrada — на иврите",
-    "arrival_fatigue_management": "День1 ≥3ч? как День2 компенсирует — на иврите"
-  },
-  "micro_clustering": [
-    {
-      "day_number": 1,
-      "day_title": "краткое название дня — на иврите",
-      "day_formula_check": "утро природа + день активность + вечер город — на иврите",
-      "weekend_shield_applied": false,
-      "signature_wildcard": "авторский сюрприз или пусто — на иврите",
-      "locations_selection_logic": [
-        {
-          "location_name": "название точки (как в SOURCE)",
-          "selection_reason": "почему эта точка — на иврите",
-          "allocated_time_slot": "2–4 часа или фото-стоп 20–40 мин"
+        $path = resource_path('prompts/director_re_prompt_ru.txt');
+        if (is_file($path)) {
+            $text = trim((string) file_get_contents($path));
+            if ($text !== '') {
+                return $text;
+            }
         }
-      ],
-      "logistics_and_safety": {
-        "estimated_driving_time_min": 180,
-        "ztl_and_parking_solution": "парковка вне ZTL — на иврите"
-      }
-    }
-  ],
-  "fine_tune": {
-    "question": "короткий уникальный запрос клиента — на иврите",
-    "answer": {
-      "summary": "для кого + регионы + базы — на иврите",
-      "days": [
-        {
-          "day_index": 1,
-          "title": "роль дня — на иврите",
-          "places_text": "места из SOURCE"
-        }
-      ]
-    }
-  }
-}
 
-Обязательно: все дни входа в fine_tune.answer.days. Values ответа — только иврит (без кириллицы).
-PROMPT;
+        return 'Мастер-Промпт Обратного Инжиниринга (файл resources/prompts/director_re_prompt_ru.txt не найден).';
     }
 
-    /** Сохраняет единственный рабочий (русский) промпт. $uiLang игнорируется. */
-    public static function savePromptForUi(string $uiLang, string $prompt): void
+    /** Сохраняет единственный рабочий (русский) промпт. $uiLang игнорируется. Текст — как прислали, без правок. */
+    public static function savePromptForUi(string $uiLang, string $prompt): string
     {
-        AppSetting::putValue(self::PROMPT_SETTING_KEY_RU, trim($prompt));
+        $prompt = trim($prompt);
+        AppSetting::putValue(self::PROMPT_SETTING_KEY_RU, $prompt);
+
+        return (string) AppSetting::getValue(self::PROMPT_SETTING_KEY_RU, $prompt);
     }
 
     /** Сброс к дефолту (русский). $uiLang игнорируется. */
@@ -223,6 +187,86 @@ PROMPT;
         AppSetting::putValue(self::PROMPT_SETTING_KEY_RU, $fresh);
 
         return $fresh;
+    }
+
+    public static function defaultManualPromptRu(): string
+    {
+        $path = resource_path('prompts/director_re_prompt_manual_ru.txt');
+        if (is_file($path)) {
+            $text = trim((string) file_get_contents($path));
+            if ($text !== '') {
+                return $text;
+            }
+        }
+
+        return "ПРОМПТ ДЛЯ РУЧНОЙ РАБОТЫ В GEMINI\n\n".self::defaultPromptRu();
+    }
+
+    public static function resolveManualPromptRu(): string
+    {
+        $stored = trim((string) AppSetting::getValue(self::MANUAL_PROMPT_SETTING_KEY_RU, ''));
+        if ($stored !== '') {
+            return $stored;
+        }
+        $fresh = self::defaultManualPromptRu();
+        AppSetting::putValue(self::MANUAL_PROMPT_SETTING_KEY_RU, $fresh);
+
+        return $fresh;
+    }
+
+    public static function saveManualPromptRu(string $prompt): string
+    {
+        $prompt = trim($prompt);
+        AppSetting::putValue(self::MANUAL_PROMPT_SETTING_KEY_RU, $prompt);
+
+        return (string) AppSetting::getValue(self::MANUAL_PROMPT_SETTING_KEY_RU, $prompt);
+    }
+
+    public static function resetManualPromptRu(): string
+    {
+        $fresh = self::defaultManualPromptRu();
+        AppSetting::putValue(self::MANUAL_PROMPT_SETTING_KEY_RU, $fresh);
+
+        return $fresh;
+    }
+
+    /**
+     * Ручная сборка: JSON из чата Gemini → те же поля reverse_principle.
+     *
+     * @return array{principle: array<string, mixed>, provider: string}
+     */
+    public function importManualJson(FtShortRoute $route, string $rawJson): array
+    {
+        $rawJson = trim($rawJson);
+        $rawJson = preg_replace('/^```(?:json)?\s*|\s*```$/iu', '', $rawJson) ?? $rawJson;
+        $decoded = json_decode(trim($rawJson), true);
+        if (! is_array($decoded)) {
+            throw new \RuntimeException('Не JSON: вставь ответ Gemini целиком (объект с trip_archetype / micro_clustering / fine_tune).');
+        }
+
+        $data = $this->normalize($decoded, [], $this->shortQuestionFallback($route));
+        if (self::isHollowPrinciple($data)) {
+            throw new \RuntimeException('JSON пустой (нет архетипа и дней). В документ не записано.');
+        }
+
+        $data['schema_version'] = self::SCHEMA_VERSION;
+        $data['extracted_at'] = now()->toIso8601String();
+        $data['output_language'] = 'he';
+        $data['re_provider'] = 'gemini';
+        $data['source'] = 'ft_short_manual_paste';
+
+        $this->storePrinciple($route, 'gemini', $data, clearRu: true);
+        $route->save();
+
+        $route->loadMissing('newShortRoute');
+        $nsr = $route->newShortRoute;
+        if ($nsr) {
+            $nsr->reverse_principle = $data;
+            $nsr->reverse_principle_ru = null;
+            $nsr->save();
+        }
+
+        return ['principle' => $data, 'provider' => 'gemini'];
     }
 
     /**
@@ -236,67 +280,50 @@ PROMPT;
             $provider = 'gemini';
         }
 
-        $days = is_array($route->days) ? $route->days : [];
-        if ($days === [] && trim((string) ($route->route_text ?? '')) === '') {
-            $data = [
-                'skipped' => true,
-                'reason' => 'no_days',
-                'schema_version' => self::SCHEMA_VERSION,
-                'extracted_at' => now()->toIso8601String(),
-                're_provider' => $provider,
-            ];
-            $this->storePrinciple($route, $provider, $data, clearRu: true);
-            $route->save();
-
-            return ['principle' => $data, 'provider' => $provider];
+        // SOURCE из New Short: «Маршрут (как есть)» + «Текст Word (простыня)».
+        // Старый days-каркас / FT route_text в Gemini не отправляем.
+        $route->loadMissing('newShortRoute');
+        $nsr = $route->newShortRoute;
+        $routeAsIs = trim((string) ($nsr?->route_text ?? ''));
+        $bodyFull = trim((string) ($nsr?->body_text ?? ''));
+        if ($routeAsIs === '' && $bodyFull === '') {
+            // Сбой / нет SOURCE — в документ ничего не пишем.
+            throw new \RuntimeException(
+                'Нет SOURCE: пусты «Маршрут (как есть)» и «Текст Word (простыня)» у связанного New Short. В документ не записано.'
+            );
         }
 
-        $daysPayload = [];
-        foreach ($days as $d) {
-            if (! is_array($d)) {
-                continue;
-            }
-            $idx = (int) ($d['day_index'] ?? (count($daysPayload) + 1));
-            $places = trim((string) ($d['places'] ?? ''));
-            $opts = array_values(array_filter(array_map(
-                static fn ($o) => trim((string) $o),
-                (array) ($d['options'] ?? [])
-            )));
-            $daysPayload[] = [
-                'day_index' => $idx,
-                'places' => $places,
-                'options' => $opts,
-            ];
+        $maxBody = 180_000;
+        $bodyTruncated = false;
+        $body = $bodyFull;
+        if ($body !== '' && mb_strlen($body) > $maxBody) {
+            $body = mb_substr($body, 0, $maxBody)."\n…[truncated]";
+            $bodyTruncated = true;
         }
 
         $material = json_encode([
             'ft_short_route_id' => $route->id,
+            'new_short_route_id' => $nsr?->id,
             'doc_code' => $route->doc_code,
             'title' => $route->displayTitle(false),
-            'days_count' => $route->days_count ?: count($daysPayload),
-            'route_text' => (string) ($route->route_text ?? ''),
-            'days' => $daysPayload,
+            'route_as_is' => $routeAsIs,
+            'full_word_body' => $body,
+            'full_word_body_truncated' => $bodyTruncated,
             'output_language' => 'he',
-            'note' => 'Все строковые values JSON — иврит. Места как в SOURCE. Без кириллицы в values.',
+            'note' => 'SOURCE = route_as_is (Маршрут как есть) + full_word_body (простыня Word). days/каркас не передаём.',
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
-        $material = mb_substr((string) $material, 0, 90000);
+        $data = $this->analyzeMaterial(
+            $provider,
+            (string) $material,
+            [],
+            $this->shortQuestionFallback($route)
+        );
 
-        $instruction = self::promptForGemini(self::resolvePromptRu() ?: self::defaultPromptRu());
-
-        $raw = $this->askProvider($provider, $instruction, $material);
-        $data = $this->normalize($raw, $daysPayload, $this->shortQuestionFallback($route));
-
-        // Если модель всё же ответила по-русски — один жёсткий retry (values снова на иврите).
-        if ($this->looksLikeRussian($data) && ! $this->looksLikeHebrew($data)) {
-            $retryInstruction = $instruction."\n\nПовтор: предыдущий ответ был на русском. Перепиши весь JSON: все string values только на иврите, без кириллицы.";
-            $raw = $this->askProvider($provider, $retryInstruction, $material);
-            $data = $this->normalize($raw, $daysPayload, $this->shortQuestionFallback($route));
-        }
-
-        if ($this->looksLikeRussian($data) && ! $this->looksLikeHebrew($data)) {
+        // Ещё раз: пустой/битый ответ в документ не пишем (analyzeMaterial уже бросает, это страховка).
+        if (self::isHollowPrinciple($data)) {
             throw new \RuntimeException(
-                'Модель вернула разбор на русском вместо иврита. Нажми «Получить разбор» ещё раз.'
+                'Модель вернула пустой разбор (без архетипа и дней). В документ не записано.'
             );
         }
 
@@ -304,10 +331,17 @@ PROMPT;
         $data['extracted_at'] = now()->toIso8601String();
         $data['output_language'] = 'he';
         $data['re_provider'] = $provider;
+        $data['source'] = 'ft_short_route_as_is_and_word';
+        $data['source_chars'] = [
+            'route_as_is' => mb_strlen($routeAsIs),
+            'full_word_body' => mb_strlen($bodyFull),
+            'full_word_body_sent' => mb_strlen($body),
+            'truncated' => $bodyTruncated,
+        ];
 
         // Gemini и Claude — разные слоты: Claude не затирает Gemini и наоборот.
         if ($provider === 'claude') {
-            $this->storePrinciple($route, 'claude', $data, clearRu: true);
+            $this->storePrinciple($route, $provider, $data, clearRu: true);
         } else {
             // Новый Gemini HE: сбрасываем RU, кроме misplaced русского из HE-слота.
             $oldRu = is_array($route->reverse_principle_ru) ? $route->reverse_principle_ru : null;
@@ -317,6 +351,13 @@ PROMPT;
             $this->storePrinciple($route, 'gemini', $data, clearRu: ! $keepMisplacedRu);
         }
         $route->save();
+
+        // Зеркало в New Short (Gemini), чтобы результат был и там.
+        if ($nsr && $provider === 'gemini') {
+            $nsr->reverse_principle = $data;
+            $nsr->reverse_principle_ru = null;
+            $nsr->save();
+        }
 
         return ['principle' => $data, 'provider' => $provider];
     }
@@ -345,16 +386,83 @@ PROMPT;
     }
 
     /**
+     * Общий прогон RE по произвольному SOURCE-материалу (FT Short / New Short).
+     *
+     * @param  list<array{day_index:int,places:string,options:list<string>}>  $daysPayload
      * @return array<string, mixed>
      */
-    private function askProvider(string $provider, string $instruction, string $material): array
+    public function analyzeMaterial(
+        string $provider,
+        string $material,
+        array $daysPayload = [],
+        string $shortQuestionFallback = '',
+    ): array {
+        $provider = strtolower(trim($provider));
+        if (! in_array($provider, ['gemini', 'claude'], true)) {
+            $provider = 'gemini';
+        }
+
+        $instruction = self::promptForGemini(self::resolvePromptRu() ?: self::defaultPromptRu());
+        $raw = $this->askProvider($provider, $instruction, $material, 'low');
+        $data = $this->normalize($raw, $daysPayload, $shortQuestionFallback);
+
+        // Пустой каркас (все поля null) — не сохраняем как успех, один retry жёстче.
+        if (self::isHollowPrinciple($data)) {
+            $retryInstruction = $instruction."\n\nПовтор: предыдущий JSON был пустым (null/пустые массивы). Заполни схему по SOURCE полностью: trip_archetype, macro_architecture, micro_clustering (по дням), fine_tune. Values — только иврит.";
+            $raw = $this->askProvider($provider, $retryInstruction, $material, 'medium');
+            $data = $this->normalize($raw, $daysPayload, $shortQuestionFallback);
+        }
+
+        // Если модель всё же ответила по-русски — один жёсткий retry (values снова на иврите).
+        if ($this->looksLikeRussian($data) && ! $this->looksLikeHebrew($data)) {
+            $retryInstruction = $instruction."\n\nПовтор: предыдущий ответ был на русском. Перепиши весь JSON: все string values только на иврите, без кириллицы.";
+            $raw = $this->askProvider($provider, $retryInstruction, $material, 'medium');
+            $data = $this->normalize($raw, $daysPayload, $shortQuestionFallback);
+        }
+
+        if (self::isHollowPrinciple($data)) {
+            throw new \RuntimeException(
+                'Модель вернула пустой разбор (без архетипа и дней). В документ не записано. Нажми Gemini ещё раз.'
+            );
+        }
+
+        if ($this->looksLikeRussian($data) && ! $this->looksLikeHebrew($data)) {
+            throw new \RuntimeException(
+                'Модель вернула разбор на русском вместо иврита. Нажми «Получить разбор» ещё раз.'
+            );
+        }
+
+        return $data;
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    public static function isHollowPrinciple(array $data): bool
+    {
+        if (! empty($data['skipped'])) {
+            return true;
+        }
+
+        $arch = is_array($data['trip_archetype'] ?? null) ? $data['trip_archetype'] : [];
+        $name = trim((string) ($arch['archetype_name'] ?? ''));
+        $micro = is_array($data['micro_clustering'] ?? null) ? $data['micro_clustering'] : [];
+        $sample = trim(self::sampleText($data));
+
+        return $name === '' && $micro === [] && $sample === '';
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function askProvider(string $provider, string $instruction, string $material, string $thinking = 'low'): array
     {
         if ($provider === 'claude') {
             return $this->claude->ask($instruction, $material);
         }
 
         // gemini-3.8 rejects thinkingLevel MINIMAL — LOW is the floor.
-        return $this->gemini->ask($instruction, $material, 'low');
+        return $this->gemini->ask($instruction, $material, $thinking);
     }
 
     /** Старые RE ошибочно на русском в поле HE — отдать как RU-кандидат. */

@@ -4,6 +4,8 @@
   $pendingRu = (int) ($pendingRu ?? 0);
   $pendingVector = (int) ($pendingVector ?? 0);
   $vectorIndexed = (int) ($vectorIndexed ?? 0);
+  $reverseReady = (int) ($reverseReady ?? 0);
+  $reversePending = (int) ($reversePending ?? 0);
 @endphp
 <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
   <h4 class="mb-0">
@@ -15,6 +17,10 @@
       <span class="badge bg-label-warning rounded-pill" title="Ещё без русского">без RU: {{ $pendingRu }}</span>
     @endif
     <span class="badge bg-label-success rounded-pill" title="Уже в PostgreSQL RAG">RAG: {{ $vectorIndexed }}</span>
+    <span class="badge bg-label-danger rounded-pill" title="Обратный разбор готов">RE: {{ $reverseReady }}</span>
+    @if($reversePending > 0)
+      <span class="badge bg-label-secondary rounded-pill" title="Ещё без RE">без RE: {{ $reversePending }}</span>
+    @endif
   </h4>
   <div class="d-flex flex-wrap gap-2">
     <button type="button" class="btn btn-info text-white nsr-scan-btn"
@@ -47,6 +53,22 @@
       <i class="bx bx-data me-1"></i> 4. В RAG
       <span class="badge bg-label-dark ms-1" title="ещё не в RAG">{{ $pendingVector }}</span>
     </button>
+    <button type="button" class="btn btn-danger nsr-reverse-start-btn"
+            title="5. Обратный разбор: короткий каркас + полный Word → JSON (Gemini, queue)"
+            data-url="{{ route('admin.new-short-routes.reverse-pipeline.start') }}"
+            data-cancel-url="{{ route('admin.new-short-routes.reverse-pipeline.cancel') }}"
+            data-status-url="{{ route('admin.new-short-routes.reverse-pipeline.status', ['provider' => 'gemini']) }}"
+            data-csrf="{{ csrf_token() }}"
+            data-pending="{{ $reversePending }}">
+      <i class="bx bx-search-alt me-1"></i> 5. RE Gemini
+      <span class="badge bg-dark ms-1">{{ $reversePending }}</span>
+    </button>
+    <button type="button" class="btn btn-outline-danger nsr-reverse-clear-btn"
+            title="Снести все RE (New Short + старые FT Short)"
+            data-url="{{ route('admin.new-short-routes.reverse-principles.clear') }}"
+            data-csrf="{{ csrf_token() }}">
+      <i class="bx bx-trash me-1"></i> Снести RE
+    </button>
   </div>
 </div>
 
@@ -63,12 +85,47 @@
       <li><strong>Карточка</strong> — два слоя без угаданных ночёвок/хабов (1:1 из Word).</li>
       <li><strong>Перевод на русский</strong> — HE → RU пачкой; прогресс ниже, когда много.</li>
       <li><strong>В RAG</strong> — дни в PostgreSQL (эмбеддинги, иврит), без локаций. Повторный запуск <strong>не сначала</strong>: уже залитое пропускает, догоняет только «ещё». Free: пауза ~20с, при 429 ~90с. Нужен <code>queue:work</code>.</li>
+      <li><strong>RE Gemini</strong> — в модель уходит <strong>краткий каркас + полный текст Word</strong> → JSON обратной инженерии. Paid Gemini. Нужен <code>queue:work</code>.</li>
     </ol>
     <div class="small text-muted">
-      Старые Short routes не трогаем. <code>he / ru</code> слева — язык списка.
-      Без RU: <strong>{{ $pendingRu }}</strong> · уже в RAG: <strong>{{ $vectorIndexed }}</strong> · осталось догнать: <strong>{{ $pendingVector }}</strong>.
+      Старые Short routes / FT Short RE — не рабочий контур. <code>he / ru</code> слева — язык списка.
+      Без RU: <strong>{{ $pendingRu }}</strong> · RAG: <strong>{{ $vectorIndexed }}</strong> · RE готово: <strong>{{ $reverseReady }}</strong> · без RE: <strong>{{ $reversePending }}</strong>.
     </div>
   </div>
+</div>
+
+<div class="card mb-3">
+  <div class="card-header d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <div>
+      <div class="fw-semibold">Промпт обратного разбора (русский → ответ на иврите)</div>
+      <div class="small text-muted">Общий промпт для New Short RE. «Сохранить» пишет в БД и не затирается при обновлении страницы.</div>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+      <span id="nsrReversePromptStatus" class="small text-muted"></span>
+      <button type="button" class="btn btn-sm btn-outline-secondary" id="nsrReversePromptReset">Сброс</button>
+      <button type="button" class="btn btn-sm btn-primary" id="nsrReversePromptSave">
+        <i class="bx bx-save me-1"></i> Сохранить
+      </button>
+    </div>
+  </div>
+  <div class="card-body pt-0">
+    <textarea id="nsrReversePromptInput" class="form-control font-monospace" rows="16" spellcheck="false" dir="ltr">{{ $reversePrompt ?? '' }}</textarea>
+  </div>
+</div>
+
+<div class="nsr-reverse-progress border rounded p-3 mb-3 bg-label-danger" style="display:none;">
+  <div class="d-flex align-items-center justify-content-between gap-2 mb-2 flex-wrap">
+    <div class="fw-semibold nsr-reverse-label">RE New Short (каркас + Word → JSON)</div>
+    <div class="d-flex align-items-center gap-2">
+      <div class="fw-bold nsr-reverse-pct">0%</div>
+      <button type="button" class="btn btn-sm btn-outline-secondary nsr-reverse-cancel-btn">Стоп</button>
+    </div>
+  </div>
+  <div class="progress mb-2" style="height:1rem;">
+    <div class="progress-bar progress-bar-striped progress-bar-animated bg-danger nsr-reverse-bar" role="progressbar" style="width:0%"></div>
+  </div>
+  <div class="small text-muted nsr-reverse-status">—</div>
+  <div class="small text-danger nsr-reverse-error mt-1" style="display:none;"></div>
 </div>
 
 <div class="nsr-vector-progress border rounded p-3 mb-3 bg-light" style="display:none;">
@@ -131,11 +188,15 @@
     <table class="table table-hover mb-0">
       <thead>
         <tr>
+          <th style="width:2.5rem" class="text-center">
+            <input type="checkbox" class="form-check-input nsr-select-all" title="Выбрать страницу">
+          </th>
           <th>#</th>
           <th>Код</th>
           <th>Название</th>
           <th>Дней</th>
           <th>Прилёт → выезд</th>
+          <th>RE</th>
           <th></th>
         </tr>
       </thead>
@@ -154,8 +215,12 @@
               : ($item->departure_hub ?: '—');
             $showUrl = route('admin.new-short-routes.show', [$item, 'lang' => $useRu ? 'ru' : 'he']);
             $hasRu = $item->hasRussian();
+            $hasRe = $item->hasReversePrinciple();
           @endphp
           <tr>
+            <td class="text-center">
+              <input type="checkbox" class="form-check-input nsr-row-check" value="{{ $item->id }}">
+            </td>
             <td title="id={{ $item->id }}">{{ $item->id }}</td>
             <td>
               @if($item->doc_code)
@@ -179,6 +244,13 @@
               →
               {{ $depart }}
             </td>
+            <td>
+              @if($hasRe)
+                <span class="badge bg-danger">RE</span>
+              @else
+                <span class="text-muted small">—</span>
+              @endif
+            </td>
             <td class="text-nowrap">
               <a href="{{ $showUrl }}" class="btn btn-icon btn-sm btn-outline-info" title="Открыть">
                 <i class="bx bx-show"></i>
@@ -194,7 +266,7 @@
             </td>
           </tr>
         @empty
-          <tr><td colspan="6" class="text-center text-muted py-4">Пусто — нажмите «1. Скан Word»</td></tr>
+          <tr><td colspan="8" class="text-center text-muted py-4">Пусто — нажмите «1. Скан Word»</td></tr>
         @endforelse
       </tbody>
     </table>
@@ -441,6 +513,214 @@
       btn.disabled = false;
     }
   });
+
+  // --- Выбор строк ---
+  const selectAll = document.querySelector('.nsr-select-all');
+  if (selectAll) {
+    selectAll.addEventListener('change', function () {
+      document.querySelectorAll('.nsr-row-check').forEach(function (cb) {
+        cb.checked = selectAll.checked;
+      });
+    });
+  }
+
+  function selectedIds() {
+    return Array.from(document.querySelectorAll('.nsr-row-check:checked'))
+      .map(function (cb) { return parseInt(cb.value, 10); })
+      .filter(function (id) { return id > 0; });
+  }
+
+  // --- 5. RE Gemini (каркас + Word) ---
+  (function () {
+    const startBtn = document.querySelector('.nsr-reverse-start-btn');
+    const clearBtn = document.querySelector('.nsr-reverse-clear-btn');
+    const box = document.querySelector('.nsr-reverse-progress');
+    const pctEl = document.querySelector('.nsr-reverse-pct');
+    const bar = document.querySelector('.nsr-reverse-bar');
+    const statusEl = document.querySelector('.nsr-reverse-status');
+    const errEl = document.querySelector('.nsr-reverse-error');
+    const cancelBtn = document.querySelector('.nsr-reverse-cancel-btn');
+    if (!startBtn) return;
+    let timer = null;
+
+    async function postJson(url, body) {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+          'X-CSRF-TOKEN': startBtn.dataset.csrf,
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        body: JSON.stringify(body || {}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok && res.status !== 409) throw new Error(data.message || ('HTTP ' + res.status));
+      return data;
+    }
+
+    function render(s) {
+      const total = Number(s.total || 0);
+      const done = Number(s.done || 0) + Number(s.failed || 0);
+      const pct = total > 0 ? Math.round(done / total * 100) : 0;
+      bar.style.width = pct + '%';
+      pctEl.textContent = pct + '%';
+      statusEl.textContent = 'Готово ' + done + ' / ' + total
+        + (s.failed ? (' · ошибок ' + s.failed) : '')
+        + (s.current ? (' · сейчас: ' + s.current) : '')
+        + (s.reverse_ready != null ? (' · RE в БД: ' + s.reverse_ready) : '');
+      if (s.last_error) { errEl.style.display = 'block'; errEl.textContent = s.last_error; }
+      else { errEl.style.display = 'none'; }
+      if (s.state === 'running') {
+        box.style.display = 'block';
+        startBtn.disabled = true;
+        bar.classList.add('progress-bar-animated');
+      } else {
+        startBtn.disabled = false;
+        bar.classList.remove('progress-bar-animated');
+        if (timer && (s.state === 'done' || s.state === 'cancelled' || s.state === 'paused')) {
+          clearInterval(timer);
+          timer = null;
+          statusEl.textContent = (s.state === 'done' ? 'Готово. ' : (s.state === 'paused' ? 'Пауза. ' : 'Остановлено. ')) + statusEl.textContent;
+        }
+      }
+    }
+
+    async function poll() {
+      const res = await fetch(startBtn.dataset.statusUrl, { headers: { 'Accept': 'application/json' } });
+      const s = await res.json().catch(() => ({}));
+      render(s);
+      return s;
+    }
+
+    function startPolling() {
+      if (timer) clearInterval(timer);
+      box.style.display = 'block';
+      poll();
+      timer = setInterval(poll, 5000);
+    }
+
+    startBtn.addEventListener('click', async function () {
+      const ids = selectedIds();
+      const pending = Number(startBtn.dataset.pending || 0);
+      let msg;
+      let body;
+      if (ids.length > 0) {
+        msg = 'RE Gemini для выбранных ' + ids.length + ' New Short?\nВ модель: короткий каркас + полный Word.\nНужен queue:work и paid Gemini.';
+        body = { provider: 'gemini', ids: ids, only_pending: false };
+      } else {
+        msg = 'RE Gemini для всех без RE (' + pending + ' шт.)?\nВ модель: короткий каркас + полный Word.\nНужен queue:work и paid Gemini.';
+        body = { provider: 'gemini', only_pending: true };
+      }
+      if (!confirm(msg)) return;
+      try {
+        const data = await postJson(startBtn.dataset.url, body);
+        if (!data.started) { alert(data.message || 'Нечего разбирать'); return; }
+        startPolling();
+      } catch (e) {
+        alert(e.message || String(e));
+      }
+    });
+
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', async function () {
+        if (!confirm('Остановить RE New Short?')) return;
+        try {
+          await postJson(startBtn.dataset.cancelUrl, { provider: 'gemini' });
+          await poll();
+        } catch (e) {
+          alert(e.message || String(e));
+        }
+      });
+    }
+
+    if (clearBtn) {
+      clearBtn.addEventListener('click', async function () {
+        if (!confirm('Снести ВСЕ reverse_principle у New Short и старые RE у FT Short?\nЭто необратимо.')) return;
+        clearBtn.disabled = true;
+        try {
+          const data = await postJson(clearBtn.dataset.url, { also_ft: true });
+          alert(data.message || 'OK');
+          window.location.reload();
+        } catch (e) {
+          alert(e.message || String(e));
+          clearBtn.disabled = false;
+        }
+      });
+    }
+
+    poll().then(function (s) { if (s.state === 'running') startPolling(); });
+  })();
+
+  // --- Промпт RE (общий с FT Short, хранится в AppSetting) ---
+  (function () {
+    const promptInput = document.getElementById('nsrReversePromptInput');
+    const promptStatus = document.getElementById('nsrReversePromptStatus');
+    const promptSave = document.getElementById('nsrReversePromptSave');
+    const promptReset = document.getElementById('nsrReversePromptReset');
+    if (!promptSave || !promptInput) return;
+    const promptSaveUrl = @json(route('admin.ft-short-routes.reverse-prompt.save'));
+    const promptResetUrl = @json(route('admin.ft-short-routes.reverse-prompt.reset'));
+
+    promptSave.addEventListener('click', async function () {
+      promptSave.disabled = true;
+      if (promptStatus) promptStatus.textContent = 'Сохраняю…';
+      try {
+        const res = await fetch(promptSaveUrl, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': csrf,
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+          body: JSON.stringify({ prompt: promptInput.value, lang: 'ru', _token: csrf }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const ve = data.errors && data.errors.prompt ? data.errors.prompt[0] : null;
+          throw new Error(ve || data.message || ('HTTP ' + res.status + (res.status === 419 ? ' (CSRF — обнови страницу)' : '')));
+        }
+        if (typeof data.prompt === 'string') promptInput.value = data.prompt;
+        if (promptStatus) {
+          promptStatus.textContent = (data.message || 'Промпт сохранён')
+            + (data.chars ? (' · ' + data.chars + ' симв.') : '');
+        }
+      } catch (e) {
+        if (promptStatus) promptStatus.textContent = e.message || String(e);
+      } finally {
+        promptSave.disabled = false;
+      }
+    });
+
+    if (promptReset) {
+      promptReset.addEventListener('click', async function () {
+        if (!confirm('Сбросить промпт к заводскому?')) return;
+        promptReset.disabled = true;
+        try {
+          const res = await fetch(promptResetUrl + '?lang=ru', {
+            method: 'POST',
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/json',
+              'X-CSRF-TOKEN': csrf,
+              'X-Requested-With': 'XMLHttpRequest',
+            },
+            body: JSON.stringify({ lang: 'ru' }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.message || ('HTTP ' + res.status));
+          if (data.prompt) promptInput.value = data.prompt;
+          if (promptStatus) promptStatus.textContent = data.message || 'Сброшено';
+        } catch (e) {
+          if (promptStatus) promptStatus.textContent = e.message || String(e);
+        } finally {
+          promptReset.disabled = false;
+        }
+      });
+    }
+  })();
 })();
 </script>
 @endsection

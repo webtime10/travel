@@ -4,13 +4,19 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Jobs\IndexNewShortRouteJob;
+use App\Jobs\ReverseEngineerNewShortRouteJob;
+use App\Models\FtShortRoute;
 use App\Models\NewShortRoute;
 use App\Models\NewShortRouteDay;
+use App\Services\FtShortRouteReverseEngineer;
+use App\Services\GeminiKeyPool;
 use App\Services\NewShortRouteDocImporter;
 use App\Services\NewShortRouteOvernightGemini;
+use App\Services\NewShortRouteReverseEngineer;
 use App\Services\NewShortRouteRuTranslator;
 use App\Services\NewShortRouteVectorPipelineStore;
 use App\Services\RagDatabaseService;
+use App\Services\ReverseEngineeringPipelineStore;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -79,6 +85,13 @@ class NewShortRouteController extends Controller
         } catch (\Throwable) {
         }
 
+        $reverseReady = NewShortRoute::query()
+            ->whereNotNull('reverse_principle')
+            ->where('reverse_principle', '!=', '[]')
+            ->where('reverse_principle', 'not like', '%"skipped"%')
+            ->count();
+        $reversePending = max(0, NewShortRoute::count() - $reverseReady);
+
         return view('admin.new_short_routes.index', [
             'pageTitle' => 'New Short routes',
             'items' => $items,
@@ -91,6 +104,9 @@ class NewShortRouteController extends Controller
             'pendingRu' => $pendingRu,
             'vectorIndexed' => $vectorIndexed,
             'pendingVector' => $pendingVector,
+            'reverseReady' => $reverseReady,
+            'reversePending' => $reversePending,
+            'reversePrompt' => FtShortRouteReverseEngineer::resolvePromptRu(),
         ]);
     }
 
@@ -431,6 +447,162 @@ class NewShortRouteController extends Controller
         $pipeline->cancel();
 
         return response()->json(['ok' => true, 'message' => 'Остановлено']);
+    }
+
+    /** Разбор одного New Short: каркас + полный Word → reverse_principle (иврит). */
+    public function reverseOne(NewShortRoute $new_short_route, NewShortRouteReverseEngineer $engineer, Request $request): JsonResponse
+    {
+        @set_time_limit(900);
+        $provider = strtolower((string) $request->input('provider', 'gemini'));
+        if (! in_array($provider, ['gemini', 'claude'], true)) {
+            $provider = 'gemini';
+        }
+        try {
+            $result = $engineer->extract($new_short_route->fresh(), $provider);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'message' => $e->getMessage()], 500);
+        }
+
+        return response()->json(['ok' => true] + $result);
+    }
+
+    public function reversePipelineStatus(Request $request): JsonResponse
+    {
+        $provider = strtolower((string) $request->query('provider', 'gemini'));
+        if (! in_array($provider, ['gemini', 'claude'], true)) {
+            $provider = 'gemini';
+        }
+        $pipeline = ReverseEngineeringPipelineStore::for(ReverseEngineerNewShortRouteJob::pipelineName($provider));
+
+        return response()->json($pipeline->status() + [
+            'provider' => $provider,
+            'reverse_ready' => NewShortRoute::query()
+                ->whereNotNull('reverse_principle')
+                ->where('reverse_principle', '!=', '[]')
+                ->where('reverse_principle', 'not like', '%"skipped"%')
+                ->count(),
+        ]);
+    }
+
+    /**
+     * Пакетный RE через queue:work. Body: { provider?: gemini|claude, ids?: int[], only_pending?: bool }
+     */
+    public function reversePipelineStart(Request $request, GeminiKeyPool $keys): JsonResponse
+    {
+        $provider = strtolower((string) $request->input('provider', 'gemini'));
+        if (! in_array($provider, ['gemini', 'claude'], true)) {
+            $provider = 'gemini';
+        }
+
+        $pipeline = ReverseEngineeringPipelineStore::for(ReverseEngineerNewShortRouteJob::pipelineName($provider));
+        if ($pipeline->running()) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'RE New Short уже идёт ('.$provider.')',
+            ], 409);
+        }
+
+        $ids = $request->input('ids', []);
+        if (! is_array($ids)) {
+            $ids = [];
+        }
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids), static fn ($id) => $id > 0)));
+
+        $onlyPending = $request->boolean('only_pending', true);
+
+        if ($ids === []) {
+            $query = NewShortRoute::query()->orderBy('id');
+            if ($onlyPending) {
+                $query->where(function ($w) {
+                    $w->whereNull('reverse_principle')
+                        ->orWhere('reverse_principle', '[]')
+                        ->orWhere('reverse_principle', 'like', '%"skipped"%');
+                });
+            }
+            $ids = $query->pluck('id')->map(fn ($id) => (int) $id)->all();
+        } else {
+            $existing = NewShortRoute::query()->whereIn('id', $ids)->pluck('id')->all();
+            $ids = array_values(array_intersect($ids, array_map('intval', $existing)));
+        }
+
+        if ($ids === []) {
+            return response()->json(['ok' => false, 'message' => 'Нечего разбирать (все уже с RE или пусто)'], 422);
+        }
+
+        if ($provider === 'gemini') {
+            $keys->resetToFirst();
+        }
+
+        $pipeline->begin($ids);
+        $first = $pipeline->shift();
+        if ($first !== null) {
+            ReverseEngineerNewShortRouteJob::dispatch($first, $provider);
+        }
+
+        $delay = max(8, (int) config('services.gemini.pipeline_delay_seconds', 8));
+
+        return response()->json([
+            'ok' => true,
+            'started' => count($ids),
+            'provider' => $provider,
+            'message' => 'RE New Short: '.$provider.' · '.count($ids).' шт. · пауза '.$delay.'с · нужен queue:work',
+        ]);
+    }
+
+    public function reversePipelineCancel(Request $request): JsonResponse
+    {
+        $provider = strtolower((string) $request->input('provider', 'gemini'));
+        if (! in_array($provider, ['gemini', 'claude'], true)) {
+            $provider = 'gemini';
+        }
+        ReverseEngineeringPipelineStore::for(ReverseEngineerNewShortRouteJob::pipelineName($provider))->cancel();
+
+        return response()->json([
+            'ok' => true,
+            'provider' => $provider,
+            'message' => 'RE New Short остановлен',
+        ]);
+    }
+
+    /** Снести все reverse_principle у New Short (+ опционально старые FT Short RE). */
+    public function clearReversePrinciples(Request $request): JsonResponse
+    {
+        ReverseEngineeringPipelineStore::for(ReverseEngineerNewShortRouteJob::pipelineName('gemini'))->cancel();
+        ReverseEngineeringPipelineStore::for(ReverseEngineerNewShortRouteJob::pipelineName('claude'))->cancel();
+
+        $nsr = NewShortRoute::query()
+            ->where(function ($w) {
+                $w->whereNotNull('reverse_principle')
+                    ->orWhereNotNull('reverse_principle_ru');
+            })
+            ->update([
+                'reverse_principle' => null,
+                'reverse_principle_ru' => null,
+            ]);
+
+        $ft = 0;
+        if ($request->boolean('also_ft', true)) {
+            $ft = FtShortRoute::query()
+                ->where(function ($w) {
+                    $w->whereNotNull('reverse_principle')
+                        ->orWhereNotNull('reverse_principle_ru')
+                        ->orWhereNotNull('reverse_principle_claude')
+                        ->orWhereNotNull('reverse_principle_claude_ru');
+                })
+                ->update([
+                    'reverse_principle' => null,
+                    'reverse_principle_ru' => null,
+                    'reverse_principle_claude' => null,
+                    'reverse_principle_claude_ru' => null,
+                ]);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'cleared_new_short' => $nsr,
+            'cleared_ft_short' => $ft,
+            'message' => 'Снесено RE: New Short '.$nsr.($ft ? ', FT Short '.$ft : ''),
+        ]);
     }
 
     /**

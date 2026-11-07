@@ -112,6 +112,15 @@
         <i class="bx bx-refresh me-1"></i> {{ __('ft_short.btn_rebuild_he') }}
       </button>
     @endunless
+    @if($hasRpHe || $hasRpRu)
+      <button type="button" class="btn btn-outline-secondary ft-clear-re-btn"
+              title="{{ $isClaude ? __('ft_short.btn_clear_re_claude_title') : __('ft_short.btn_clear_re_title') }}"
+              data-url="{{ route('admin.ft-short-routes.clear-reverse', $item) }}"
+              data-provider="{{ $engine }}"
+              data-csrf="{{ csrf_token() }}">
+        <i class="bx bx-eraser"></i>
+      </button>
+    @endif
     <form action="{{ route('admin.ft-short-routes.destroy', $item) }}" method="post" class="d-inline"
           onsubmit="return confirm(@json(__('ft_short.confirm_delete_one', ['id' => $item->id])));">
       @csrf
@@ -141,6 +150,61 @@
 @endif
 
 @include('admin.ft_short_routes._document', ['item' => $item, 'lang' => $lang, 'engine' => $engine, 'forPdf' => false])
+
+{{-- В самом низу: промпт (копировать в Gemini) + вставка JSON --}}
+@unless($isClaude)
+<div class="card mb-3 border-info d-print-none mt-4" id="ft-manual-prompt-card">
+  <div class="card-header py-2">
+    <a class="d-flex justify-content-between align-items-center text-decoration-none text-body"
+       data-bs-toggle="collapse" href="#ftShowManualPromptCollapse" role="button"
+       aria-expanded="false" aria-controls="ftShowManualPromptCollapse">
+      <span class="fw-semibold">
+        <i class="bx bx-chevron-down me-1"></i>
+        {{ __('ft_short.manual_prompt_title') }}
+      </span>
+      <span class="small text-muted">{{ __('ft_short.manual_prompt_toggle') }}</span>
+    </a>
+  </div>
+  <div id="ftShowManualPromptCollapse" class="collapse">
+    <div class="card-body pt-0">
+      <div class="small text-muted mb-2">{{ __('ft_short.manual_prompt_hint') }}</div>
+      <textarea id="ftShowManualPromptInput" class="form-control font-monospace" rows="12" spellcheck="false" dir="ltr">{{ $manualPrompt ?? '' }}</textarea>
+      <div class="d-flex flex-wrap align-items-center gap-2 mt-2 pt-2 border-top">
+        <span id="ftShowManualPromptStatus" class="small text-muted me-auto"></span>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="ftShowManualPromptCopy" title="{{ __('ft_short.btn_copy') }}">
+          <i class="bx bx-copy me-1"></i> {{ __('ft_short.btn_copy') }}
+        </button>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="ftShowManualPromptReset">{{ __('ft_short.btn_reset') }}</button>
+        <button type="button" class="btn btn-sm btn-primary" id="ftShowManualPromptSave" title="{{ __('ft_short.btn_save') }}">
+          <i class="bx bx-save me-1"></i> {{ __('ft_short.btn_save') }}
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-3 border-info d-print-none" id="ft-manual-paste">
+  <div class="card-header py-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
+    <span class="fw-semibold"><i class="bx bx-paste me-1"></i> {{ __('ft_short.manual_paste_title') }}</span>
+    @if($code)
+      <span class="badge bg-primary">{{ __('ft_short.code', ['code' => $code]) }}</span>
+    @endif
+  </div>
+  <div class="card-body">
+    <div class="small text-muted mb-2">{{ __('ft_short.manual_paste_hint') }}</div>
+    <textarea id="ftManualJsonInput" class="form-control font-monospace mb-2" rows="8" spellcheck="false" dir="ltr"
+              placeholder="{{ __('ft_short.manual_paste_ph') }}"></textarea>
+    <div class="d-flex flex-wrap align-items-center gap-2">
+      <button type="button" class="btn btn-primary btn-sm" id="ftManualJsonApply"
+              data-url="{{ route('admin.ft-short-routes.import-manual-json', $item) }}"
+              data-csrf="{{ csrf_token() }}">
+        <i class="bx bx-check me-1"></i> {{ __('ft_short.btn_apply_json') }}
+      </button>
+      <span id="ftManualJsonStatus" class="small text-muted"></span>
+    </div>
+  </div>
+</div>
+@endunless
 </div>
 @endsection
 
@@ -163,6 +227,8 @@
     jsTranslateProgress: @json(__('ft_short.js_translate_progress')),
     reThenTranslate: @json(__('ft_short.re_then_translate')),
     btnRebuildHe: @json(__('ft_short.btn_rebuild_he')),
+    promptSaving: @json(__('ft_short.prompt_saving')),
+    confirmClearRe: @json(__('ft_short.confirm_clear_re')),
   };
 
   const status = document.querySelector('.ft-status');
@@ -188,6 +254,38 @@
   const revStatus = document.querySelector('.ft-reverse-status');
   const btn = document.querySelector('.ft-translate-one-btn');
   const pageEngine = btn ? (btn.dataset.engine || 'gemini') : 'gemini';
+
+  document.querySelectorAll('.ft-clear-re-btn').forEach(function (clearBtn) {
+    clearBtn.addEventListener('click', async function () {
+      if (!confirm(i18n.confirmClearRe)) return;
+      clearBtn.disabled = true;
+      try {
+        const res = await fetch(clearBtn.dataset.url, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': clearBtn.dataset.csrf,
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+          body: JSON.stringify({
+            provider: clearBtn.dataset.provider || 'gemini',
+            _token: clearBtn.dataset.csrf,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.message || ('HTTP ' + res.status));
+        }
+        showStatus(data.message || @json(__('ft_short.re_cleared')), true);
+        window.location.reload();
+      } catch (e) {
+        showStatus(e.message || String(e), false);
+        clearBtn.disabled = false;
+      }
+    });
+  });
 
   function setReverseButtonsDisabled(disabled) {
     revBtns.forEach(b => { b.disabled = disabled; });
@@ -314,6 +412,123 @@
       } catch (e) {
         showStatus(e.message || String(e), false);
         rebuild.disabled = false;
+      }
+    });
+  }
+
+  const showPromptInput = document.getElementById('ftShowManualPromptInput');
+  const showPromptCopy = document.getElementById('ftShowManualPromptCopy');
+  const showPromptSave = document.getElementById('ftShowManualPromptSave');
+  const showPromptReset = document.getElementById('ftShowManualPromptReset');
+  const showPromptStatus = document.getElementById('ftShowManualPromptStatus');
+  const showPromptCsrf = @json(csrf_token());
+  const showPromptSaveUrl = @json(route('admin.ft-short-routes.manual-prompt.save'));
+  const showPromptResetUrl = @json(route('admin.ft-short-routes.manual-prompt.reset'));
+  if (showPromptCopy && showPromptInput) {
+    showPromptCopy.addEventListener('click', async function () {
+      try {
+        await navigator.clipboard.writeText(showPromptInput.value || '');
+        if (showPromptStatus) showPromptStatus.textContent = @json(__('ft_short.manual_prompt_copied'));
+      } catch (e) {
+        showPromptInput.focus();
+        showPromptInput.select();
+        if (showPromptStatus) showPromptStatus.textContent = e.message || String(e);
+      }
+    });
+  }
+  if (showPromptSave && showPromptInput) {
+    showPromptSave.addEventListener('click', async function () {
+      showPromptSave.disabled = true;
+      if (showPromptStatus) showPromptStatus.textContent = i18n.promptSaving;
+      try {
+        const res = await fetch(showPromptSaveUrl, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': showPromptCsrf,
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+          body: JSON.stringify({ prompt: showPromptInput.value, _token: showPromptCsrf }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.message || ('HTTP ' + res.status));
+        if (typeof data.prompt === 'string') showPromptInput.value = data.prompt;
+        if (showPromptStatus) {
+          showPromptStatus.textContent = (data.message || @json(__('ft_short.manual_prompt_saved')))
+            + (data.chars ? (' · ' + data.chars + ' симв.') : '');
+        }
+      } catch (e) {
+        if (showPromptStatus) showPromptStatus.textContent = e.message || String(e);
+      } finally {
+        showPromptSave.disabled = false;
+      }
+    });
+  }
+  if (showPromptReset && showPromptInput) {
+    showPromptReset.addEventListener('click', async function () {
+      if (!confirm(@json(__('ft_short.manual_prompt_reset_confirm')))) return;
+      showPromptReset.disabled = true;
+      try {
+        const res = await fetch(showPromptResetUrl, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': showPromptCsrf,
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+          body: JSON.stringify({ _token: showPromptCsrf }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.message || ('HTTP ' + res.status));
+        if (data.prompt) showPromptInput.value = data.prompt;
+        if (showPromptStatus) showPromptStatus.textContent = data.message || @json(__('ft_short.manual_prompt_reset_ok'));
+      } catch (e) {
+        if (showPromptStatus) showPromptStatus.textContent = e.message || String(e);
+      } finally {
+        showPromptReset.disabled = false;
+      }
+    });
+  }
+
+  const manualApply = document.getElementById('ftManualJsonApply');
+  const manualJson = document.getElementById('ftManualJsonInput');
+  const manualJsonStatus = document.getElementById('ftManualJsonStatus');
+  if (manualApply && manualJson) {
+    manualApply.addEventListener('click', async function () {
+      const raw = (manualJson.value || '').trim();
+      if (!raw) {
+        if (manualJsonStatus) manualJsonStatus.textContent = @json(__('ft_short.manual_json_empty'));
+        return;
+      }
+      manualApply.disabled = true;
+      if (manualJsonStatus) manualJsonStatus.textContent = '…';
+      try {
+        const res = await fetch(manualApply.dataset.url, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': manualApply.dataset.csrf,
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+          body: JSON.stringify({ json: raw }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.message || ('HTTP ' + res.status));
+        }
+        if (manualJsonStatus) manualJsonStatus.textContent = data.message || @json(__('ft_short.manual_json_saved'));
+        showStatus(data.message || @json(__('ft_short.manual_json_saved')), true);
+        setTimeout(function () { window.location.reload(); }, 600);
+      } catch (e) {
+        if (manualJsonStatus) manualJsonStatus.textContent = e.message || String(e);
+        showStatus(e.message || String(e), false);
+        manualApply.disabled = false;
       }
     });
   }

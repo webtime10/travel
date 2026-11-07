@@ -29,6 +29,8 @@ class NewShortRoute extends Model
         'body_text_ru',
         'meta',
         'ru_units',
+        'reverse_principle',
+        'reverse_principle_ru',
     ];
 
     protected $casts = [
@@ -36,7 +38,36 @@ class NewShortRoute extends Model
         'meta' => 'array',
         'ru_units' => 'array',
         'days_count' => 'integer',
+        'reverse_principle' => 'array',
+        'reverse_principle_ru' => 'array',
     ];
+
+    public function hasReversePrinciple(): bool
+    {
+        $rp = $this->reverse_principle;
+
+        return is_array($rp) && empty($rp['skipped']) && $rp !== [];
+    }
+
+    /** HE оригинал разбора; RU — только после перевода. */
+    public function reversePrincipleForDisplay(bool $preferRu = false): ?array
+    {
+        if ($preferRu) {
+            $ru = $this->reverse_principle_ru;
+            if (is_array($ru) && $ru !== [] && empty($ru['skipped'])) {
+                return $ru;
+            }
+
+            return null;
+        }
+
+        $he = $this->reverse_principle;
+        if (is_array($he) && $he !== [] && empty($he['skipped'])) {
+            return $he;
+        }
+
+        return null;
+    }
 
     public function hasRussian(): bool
     {

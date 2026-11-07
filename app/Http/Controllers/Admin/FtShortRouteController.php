@@ -6,7 +6,6 @@ use App\Http\Controllers\Controller;
 use App\Jobs\ReverseEngineerFtShortRouteJob;
 use App\Models\FtShortRoute;
 use App\Models\NewShortRoute;
-use App\Models\AppSetting;
 use App\Services\FtShortRouteNormalizer;
 use App\Services\FtShortRouteReverseEngineer;
 use App\Services\FtShortRouteRuTranslator;
@@ -15,6 +14,7 @@ use App\Services\ReverseEngineeringPipelineStore;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 
 class FtShortRouteController extends Controller
@@ -97,6 +97,7 @@ class FtShortRouteController extends Controller
             'pendingRu' => $pendingRu,
             'reverseReady' => $reverseReady,
             'reversePrompt' => FtShortRouteReverseEngineer::resolvePromptRu(),
+            'manualPrompt' => FtShortRouteReverseEngineer::resolveManualPromptRu(),
         ]);
     }
 
@@ -125,17 +126,20 @@ class FtShortRouteController extends Controller
             'item' => $ft_short_route,
             'lang' => $lang,
             'engine' => $engine,
+            'manualPrompt' => FtShortRouteReverseEngineer::resolveManualPromptRu(),
         ]);
     }
 
     /** Отдельная страница: собирает PDF HE/RU и сразу скачивает файл. */
     public function pdf(FtShortRoute $ft_short_route, string $lang): View
     {
-        $this->applyUiLocale();
         $lang = strtolower($lang);
         if (! in_array($lang, ['he', 'ru'], true)) {
             $lang = 'he';
         }
+        // Подписи PDF = язык файла (не язык меню админки).
+        app()->setLocale($lang);
+
         $ft_short_route->loadMissing('newShortRoute');
         if ($ft_short_route->repairMisplacedRussianReverse()) {
             $ft_short_route->refresh();
@@ -159,6 +163,24 @@ class FtShortRouteController extends Controller
         return redirect()
             ->route('admin.ft-short-routes.index')
             ->with('success', 'FT Short route удалён: #'.$id);
+    }
+
+    /** Очистить разбор (HE + RU) для Gemini или Claude. Маршрут не трогает. */
+    public function clearReverse(Request $request, FtShortRoute $ft_short_route): JsonResponse
+    {
+        $this->applyUiLocale();
+        $provider = strtolower(trim((string) $request->input('provider', 'gemini')));
+        if (! in_array($provider, ['gemini', 'claude'], true)) {
+            $provider = 'gemini';
+        }
+
+        $ft_short_route->clearReversePrinciple($provider);
+
+        return response()->json([
+            'ok' => true,
+            'provider' => $provider,
+            'message' => __('ft_short.re_cleared'),
+        ]);
     }
 
     public function buildBatch(Request $request, FtShortRouteNormalizer $normalizer): JsonResponse
@@ -401,17 +423,29 @@ class FtShortRouteController extends Controller
     public function saveReversePrompt(Request $request): JsonResponse
     {
         $this->applyUiLocale();
-        $request->validate([
-            'prompt' => 'required|string|max:100000',
-        ]);
+        try {
+            $request->validate([
+                'prompt' => 'required|string|max:200000',
+            ]);
+        } catch (ValidationException $e) {
+            $msg = $e->validator->errors()->first('prompt') ?: __('ft_short.prompt_empty');
+
+            return response()->json(['ok' => false, 'message' => $msg, 'errors' => $e->errors()], 422);
+        }
         $prompt = trim((string) $request->input('prompt'));
         if ($prompt === '') {
             return response()->json(['ok' => false, 'message' => __('ft_short.prompt_empty')], 422);
         }
-        // Единственный рабочий промпт — русский (уходит в Gemini; ответ модели на иврите).
-        FtShortRouteReverseEngineer::savePromptForUi('ru', $prompt);
+        // Как прислали — без resolve/апгрейда, иначе Save «откатывается».
+        $saved = FtShortRouteReverseEngineer::savePromptForUi('ru', $prompt);
 
-        return response()->json(['ok' => true, 'message' => __('ft_short.prompt_saved'), 'lang' => 'ru']);
+        return response()->json([
+            'ok' => true,
+            'message' => __('ft_short.prompt_saved'),
+            'lang' => 'ru',
+            'prompt' => $saved,
+            'chars' => mb_strlen($saved),
+        ]);
     }
 
     public function resetReversePrompt(Request $request): JsonResponse
@@ -424,6 +458,78 @@ class FtShortRouteController extends Controller
             'prompt' => $fresh,
             'lang' => 'ru',
             'message' => __('ft_short.prompt_reset_ok'),
+        ]);
+    }
+
+    public function saveManualPrompt(Request $request): JsonResponse
+    {
+        $this->applyUiLocale();
+        try {
+            $request->validate([
+                'prompt' => 'required|string|max:200000',
+            ]);
+        } catch (ValidationException $e) {
+            $msg = $e->validator->errors()->first('prompt') ?: __('ft_short.prompt_empty');
+
+            return response()->json(['ok' => false, 'message' => $msg, 'errors' => $e->errors()], 422);
+        }
+        $prompt = trim((string) $request->input('prompt'));
+        if ($prompt === '') {
+            return response()->json(['ok' => false, 'message' => __('ft_short.prompt_empty')], 422);
+        }
+        $saved = FtShortRouteReverseEngineer::saveManualPromptRu($prompt);
+
+        return response()->json([
+            'ok' => true,
+            'message' => __('ft_short.manual_prompt_saved'),
+            'prompt' => $saved,
+            'chars' => mb_strlen($saved),
+        ]);
+    }
+
+    public function resetManualPrompt(Request $request): JsonResponse
+    {
+        $this->applyUiLocale();
+        $fresh = FtShortRouteReverseEngineer::resetManualPromptRu();
+
+        return response()->json([
+            'ok' => true,
+            'prompt' => $fresh,
+            'message' => __('ft_short.manual_prompt_reset_ok'),
+        ]);
+    }
+
+    /** Ручная сборка: JSON из чата Gemini → reverse_principle (те же поля). */
+    public function importManualJson(Request $request, FtShortRoute $ft_short_route, FtShortRouteReverseEngineer $engineer): JsonResponse
+    {
+        $this->applyUiLocale();
+        try {
+            $request->validate([
+                'json' => 'required|string|max:500000',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'ok' => false,
+                'message' => $e->validator->errors()->first('json') ?: __('ft_short.manual_json_empty'),
+            ], 422);
+        }
+
+        $raw = trim((string) $request->input('json'));
+        if ($raw === '') {
+            return response()->json(['ok' => false, 'message' => __('ft_short.manual_json_empty')], 422);
+        }
+
+        try {
+            $result = $engineer->importManualJson($ft_short_route->fresh(), $raw);
+        } catch (\Throwable $e) {
+            return response()->json(['ok' => false, 'message' => $e->getMessage()], 422);
+        }
+
+        return response()->json([
+            'ok' => true,
+            'message' => __('ft_short.manual_json_saved'),
+            'provider' => $result['provider'],
+            'has_re' => true,
         ]);
     }
 }

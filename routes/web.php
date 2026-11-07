@@ -6,6 +6,7 @@ use App\Http\Controllers\Admin\AttributeController;
 use App\Http\Controllers\Admin\AttributeGroupController;
 use App\Http\Controllers\Admin\CategoryController;
 use App\Http\Controllers\Admin\DatabaseController;
+use App\Http\Controllers\Admin\FtShortRouteController;
 use App\Http\Controllers\Admin\GoldenDayController;
 use App\Http\Controllers\Admin\GoldenLabelController;
 use App\Http\Controllers\Admin\HelpCategoryController;
@@ -13,11 +14,10 @@ use App\Http\Controllers\Admin\LanguageController;
 use App\Http\Controllers\Admin\LocationController;
 use App\Http\Controllers\Admin\MainController;
 use App\Http\Controllers\Admin\ManufacturerController;
+use App\Http\Controllers\Admin\NewShortRouteController;
 use App\Http\Controllers\Admin\ProductController;
 use App\Http\Controllers\Admin\ProductPipelineController;
 use App\Http\Controllers\Admin\RoleController;
-use App\Http\Controllers\Admin\FtShortRouteController;
-use App\Http\Controllers\Admin\NewShortRouteController;
 use App\Http\Controllers\Admin\RouteSkeletonController;
 use App\Http\Controllers\Admin\SavedRouteController;
 use App\Http\Controllers\Admin\TestController;
@@ -117,11 +117,16 @@ Route::prefix('admin')
         Route::get('new-short-routes/vector-pipeline/status', [NewShortRouteController::class, 'vectorPipelineStatus'])->name('new-short-routes.vector-pipeline.status');
         Route::post('new-short-routes/vector-pipeline/start', [NewShortRouteController::class, 'vectorPipelineStart'])->name('new-short-routes.vector-pipeline.start');
         Route::post('new-short-routes/vector-pipeline/cancel', [NewShortRouteController::class, 'vectorPipelineCancel'])->name('new-short-routes.vector-pipeline.cancel');
+        Route::get('new-short-routes/reverse-pipeline/status', [NewShortRouteController::class, 'reversePipelineStatus'])->name('new-short-routes.reverse-pipeline.status');
+        Route::post('new-short-routes/reverse-pipeline/start', [NewShortRouteController::class, 'reversePipelineStart'])->name('new-short-routes.reverse-pipeline.start');
+        Route::post('new-short-routes/reverse-pipeline/cancel', [NewShortRouteController::class, 'reversePipelineCancel'])->name('new-short-routes.reverse-pipeline.cancel');
+        Route::post('new-short-routes/reverse-principles/clear', [NewShortRouteController::class, 'clearReversePrinciples'])->name('new-short-routes.reverse-principles.clear');
         Route::get('new-short-routes/{new_short_route}', [NewShortRouteController::class, 'show'])->name('new-short-routes.show');
         Route::post('new-short-routes/{new_short_route}/translate-ru', [NewShortRouteController::class, 'translateRu'])->name('new-short-routes.translate-ru');
         Route::post('new-short-routes/{new_short_route}/rescan', [NewShortRouteController::class, 'rescanOne'])->name('new-short-routes.rescan');
         Route::post('new-short-routes/{new_short_route}/save-days', [NewShortRouteController::class, 'saveDays'])->name('new-short-routes.save-days');
         Route::post('new-short-routes/{new_short_route}/gemini-overnights', [NewShortRouteController::class, 'geminiOvernights'])->name('new-short-routes.gemini-overnights');
+        Route::post('new-short-routes/{new_short_route}/reverse', [NewShortRouteController::class, 'reverseOne'])->name('new-short-routes.reverse');
         Route::delete('new-short-routes/{new_short_route}', [NewShortRouteController::class, 'destroy'])->name('new-short-routes.destroy');
 
         Route::get('ft-short-routes', [FtShortRouteController::class, 'index'])->name('ft-short-routes.index');
@@ -129,6 +134,8 @@ Route::prefix('admin')
         Route::post('ft-short-routes/translate-ru-batch', [FtShortRouteController::class, 'translateRuBatch'])->name('ft-short-routes.translate-ru-batch');
         Route::post('ft-short-routes/reverse-prompt', [FtShortRouteController::class, 'saveReversePrompt'])->name('ft-short-routes.reverse-prompt.save');
         Route::post('ft-short-routes/reverse-prompt/reset', [FtShortRouteController::class, 'resetReversePrompt'])->name('ft-short-routes.reverse-prompt.reset');
+        Route::post('ft-short-routes/manual-prompt', [FtShortRouteController::class, 'saveManualPrompt'])->name('ft-short-routes.manual-prompt.save');
+        Route::post('ft-short-routes/manual-prompt/reset', [FtShortRouteController::class, 'resetManualPrompt'])->name('ft-short-routes.manual-prompt.reset');
         Route::get('ft-short-routes/reverse-pipeline/status', [FtShortRouteController::class, 'reversePipelineStatus'])->name('ft-short-routes.reverse-pipeline.status');
         Route::post('ft-short-routes/reverse-pipeline/start', [FtShortRouteController::class, 'reversePipelineStart'])->name('ft-short-routes.reverse-pipeline.start');
         Route::post('ft-short-routes/reverse-pipeline/cancel', [FtShortRouteController::class, 'reversePipelineCancel'])->name('ft-short-routes.reverse-pipeline.cancel');
@@ -139,6 +146,8 @@ Route::prefix('admin')
         Route::post('ft-short-routes/{ft_short_route}/rebuild', [FtShortRouteController::class, 'rebuildOne'])->name('ft-short-routes.rebuild');
         Route::post('ft-short-routes/{ft_short_route}/translate-ru', [FtShortRouteController::class, 'translateRu'])->name('ft-short-routes.translate-ru');
         Route::post('ft-short-routes/{ft_short_route}/reverse', [FtShortRouteController::class, 'reverseOne'])->name('ft-short-routes.reverse');
+        Route::post('ft-short-routes/{ft_short_route}/import-manual-json', [FtShortRouteController::class, 'importManualJson'])->name('ft-short-routes.import-manual-json');
+        Route::post('ft-short-routes/{ft_short_route}/clear-reverse', [FtShortRouteController::class, 'clearReverse'])->name('ft-short-routes.clear-reverse');
         Route::delete('ft-short-routes/{ft_short_route}', [FtShortRouteController::class, 'destroy'])->name('ft-short-routes.destroy');
 
         Route::get('route-skeletons', [RouteSkeletonController::class, 'index'])->name('route-skeletons.index');

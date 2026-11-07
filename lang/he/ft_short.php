@@ -32,7 +32,7 @@ return [
     're_batch_translate' => 'תרגום #:id לרוסית…',
 
     'info_title' => 'FT Short — מקור בעברית',
-    'info_body' => 'תצוגה ראשית: יום N ומקומות בעברית. הנדסה לאחור: פתח שורה → כפתור צהוב «קבל הנדסה לאחור» (תשובה בעברית). New Short :nsr · FT :ft · RE :re · בלי רוסית :noru.',
+    'info_body' => 'הנדסה לאחור (Gemini/Claude): נשלחים «מסלול כמו שהוא» + «טקסט Word» מ-New Short (בלי שלד days). התוצאה ב-FT וגם ב-New Short. New Short :nsr · FT :ft · RE :re · בלי רוסית :noru.',
 
     'prompt_title' => 'פרומפט הנדסה לאחור (רוסית → תשובה בעברית)',
     'prompt_hint' => 'פרומפט ברוסית: «שמירה» — הטקסט שלך ל־DB (ל־Gemini), «איפוס» — ברירת מחדל. אפשר למחוק LANGUAGE_* — לא משפיע. תשובת המודל בעברית. ניתוח: שורה → כפתור צהוב.',
@@ -44,6 +44,21 @@ return [
     'prompt_reset_confirm' => 'להחזיר את הפרומפט לברירת המחדל?',
     'prompt_reset_ok' => 'הפרומפט אופס',
     'prompt_empty' => 'הפרומפט ריק',
+
+    'manual_prompt_title' => 'פרומפט ל־Gemini · עבודה ידנית',
+    'manual_prompt_toggle' => 'לפתוח / לסגור',
+    'manual_prompt_hint' => 'פרומפט אחד לכל המסמכים. העתק → לצ׳אט Gemini, צרף Word ידנית → הדבק JSON בכרטיס ב«הרכבה ידנית».',
+    'manual_prompt_saved' => 'פרומפט ידני נשמר',
+    'manual_prompt_reset_ok' => 'פרומפט ידני אופס',
+    'manual_prompt_reset_confirm' => 'להחזיר את הפרומפט הידני לברירת מחדל?',
+    'manual_prompt_copied' => 'הועתק ללוח',
+    'btn_copy' => 'העתק',
+    'manual_paste_title' => 'הרכבה ידנית · JSON מ־Gemini',
+    'manual_paste_hint' => 'הדבק JSON מצ׳אט Gemini. שדות הניתוח יתמלאו כמו אחרי כפתור אוטומטי.',
+    'manual_paste_ph' => '{ "trip_archetype": { ... }, "micro_clustering": [ ... ], "fine_tune": { ... } }',
+    'manual_json_empty' => 'JSON ריק',
+    'manual_json_saved' => 'JSON נקלט — הניתוח נשמר',
+    'btn_apply_json' => 'החל JSON',
 
     'search' => 'חיפוש',
     'search_ph' => 'קוד, שם, יום…',
@@ -66,6 +81,11 @@ return [
     'btn_parse_title' => 'פתח כרטיס / ניתוח',
     'btn_open_he' => 'פתח עברית',
     'btn_delete' => 'מחק',
+    'btn_clear_re' => 'נקה ניתוח',
+    'btn_clear_re_title' => 'נקה ניתוח Gemini (עברית + רוסית). המסלול יישאר.',
+    'btn_clear_re_claude_title' => 'נקה ניתוח Claude (עברית + רוסית). המסלול יישאר.',
+    'confirm_clear_re' => 'לנקות את הניתוח (HE + RU)? המסלול לא יימחק.',
+    're_cleared' => 'הניתוח נוקה (HE + RU)',
     'confirm_delete' => 'למחוק FT Short #:id?',
 
     'progress_build' => 'בניית FT Short (עברית)',
