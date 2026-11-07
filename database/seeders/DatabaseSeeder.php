@@ -22,21 +22,12 @@ class DatabaseSeeder extends Seeder
             ['name' => 'Editor', 'description' => 'Catalog editor']
         );
 
-        User::query()->updateOrCreate(
-            ['email' => 'admin@travel.loc'],
-            [
-                'name' => 'admin',
-                'password' => Hash::make('admin'),
-                'role_id' => $adminRole->id,
-            ]
-        );
-
-        // Simple local credentials; change anytime in Admin → Users → Edit.
+        // Единственный главный админ (логин по name).
         User::query()->updateOrCreate(
             ['email' => 'akvamarin01@travel.loc'],
             [
                 'name' => 'akvamarin01',
-                'password' => Hash::make('123456'),
+                'password' => Hash::make('9rk2Wtfe9wLxo'),
                 'role_id' => $adminRole->id,
             ]
         );

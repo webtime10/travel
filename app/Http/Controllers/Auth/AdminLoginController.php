@@ -29,7 +29,8 @@ class AdminLoginController extends Controller
             $user->load('roleRelation');
 
             if ($user->role_id) {
-                return redirect()->intended('/admin');
+                // Всегда главная админки, не «запомненная» страница (users/edit и т.п.).
+                return redirect()->route('admin.index');
             }
 
             Auth::logout();
