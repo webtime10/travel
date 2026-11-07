@@ -191,7 +191,8 @@ PROMPT;
         ];
 
         if (str_starts_with($model, 'gemini-3')) {
-            $payload['generationConfig']['thinkingConfig'] = ['thinkingLevel' => 'minimal'];
+            // gemini-3.8 rejects MINIMAL.
+            $payload['generationConfig']['thinkingConfig'] = ['thinkingLevel' => 'low'];
         }
 
         $response = Http::timeout($timeout)

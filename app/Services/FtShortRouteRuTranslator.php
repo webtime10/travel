@@ -86,6 +86,75 @@ class FtShortRouteRuTranslator
     }
 
     /**
+     * Только Claude RE: HE → RU в reverse_principle_claude_ru (маршрут/Gemini не трогаем).
+     *
+     * @return array{translated: int, remaining: int, total: int, already: int, done: bool, warning?: string}
+     */
+    public function translateClaudeReverse(FtShortRoute $route, int $limit = 40): array
+    {
+        $heRp = is_array($route->reverse_principle_claude) ? $route->reverse_principle_claude : [];
+        if ($heRp === [] || ! empty($heRp['skipped'])) {
+            throw new RuntimeException('Нет Claude-разбора (HE) — сначала кнопка Claude');
+        }
+
+        $units = $this->reverseUnits($heRp);
+        if ($units === []) {
+            throw new RuntimeException('Claude-разбор пуст — нечего переводить');
+        }
+
+        $meta = is_array($route->meta) ? $route->meta : [];
+        $done = is_array($meta['claude_ru_units'] ?? null) ? $meta['claude_ru_units'] : [];
+        $done = array_intersect_key($done, $units);
+        $already = count($done);
+        $pending = array_slice(array_diff_key($units, $done), 0, max(1, $limit), true);
+
+        $translated = 0;
+        $lastError = null;
+        if ($pending !== []) {
+            try {
+                $map = $this->gemini->translateMap($pending);
+            } catch (Throwable $e) {
+                $lastError = $e->getMessage();
+                $map = [];
+                foreach ($pending as $key => $text) {
+                    try {
+                        $map += $this->gemini->translateMap([$key => $text]);
+                    } catch (Throwable $e2) {
+                        $lastError = $e2->getMessage();
+                    }
+                }
+            }
+            foreach ($pending as $key => $_) {
+                $ru = trim((string) ($map[$key] ?? ''));
+                if ($ru !== '') {
+                    $done[$key] = $ru;
+                    $translated++;
+                }
+            }
+        }
+
+        $meta['claude_ru_units'] = $done;
+        $route->meta = $meta;
+        $route->reverse_principle_claude_ru = $this->buildReverseRu($heRp, $done);
+        $route->save();
+
+        $total = count($units);
+        $remaining = max(0, $total - count($done));
+        $out = [
+            'translated' => $translated,
+            'remaining' => $remaining,
+            'total' => $total,
+            'already' => $already,
+            'done' => $remaining === 0,
+        ];
+        if ($translated === 0 && $remaining > 0) {
+            $out['warning'] = $lastError ?: 'Gemini не вернул перевод — нажмите ещё раз.';
+        }
+
+        return $out;
+    }
+
+    /**
      * @return array{
      *   processed:int,
      *   translated_units:int,
@@ -271,17 +340,24 @@ class FtShortRouteRuTranslator
     private function reverseUnits(array $rp): array
     {
         $units = [];
+        $arch = is_array($rp['trip_archetype'] ?? null) ? $rp['trip_archetype'] : [];
+        $tp = is_array($arch['target_profile'] ?? null) ? $arch['target_profile'] : [];
         $ta = is_array($rp['target_audience'] ?? null) ? $rp['target_audience'] : [];
         $macro = is_array($rp['macro_architecture'] ?? null) ? $rp['macro_architecture'] : [];
         $ft = is_array($rp['fine_tune'] ?? null) ? $rp['fine_tune'] : [];
         $answer = is_array($ft['answer'] ?? null) ? $ft['answer'] : [];
 
         foreach ([
-            'rp_group' => $ta['group_profile'] ?? null,
-            'rp_pace' => $ta['activity_and_pace_level'] ?? null,
+            'rp_archetype' => $arch['archetype_name'] ?? null,
+            'rp_group' => $tp['group_composition'] ?? $ta['group_profile'] ?? null,
+            'rp_pace' => $tp['pace_and_physical_load'] ?? $ta['activity_and_pace_level'] ?? null,
+            'rp_cultural' => $tp['cultural_bias'] ?? null,
             'rp_why' => $ta['why_route_fits_audience'] ?? null,
+            'rp_topology' => $macro['topology'] ?? null,
             'rp_region' => $macro['region_selection_logic'] ?? null,
-            'rp_bases' => $macro['base_camps_strategy'] ?? $macro['routing_strategy'] ?? null,
+            'rp_bases' => $macro['base_camps_logic'] ?? $macro['base_camps_strategy'] ?? $macro['routing_strategy'] ?? null,
+            'rp_highway' => $macro['highway_transit_strategy'] ?? null,
+            'rp_fatigue' => $macro['arrival_fatigue_management'] ?? null,
             'rp_transit' => $macro['transit_days_handling'] ?? null,
             'rp_ft_question' => $ft['question'] ?? null,
             'rp_ft_summary' => $answer['summary'] ?? null,
@@ -293,13 +369,15 @@ class FtShortRouteRuTranslator
             }
         }
 
-        foreach (array_values($ta['special_constraints'] ?? []) as $i => $c) {
+        $constraintsSrc = $tp['special_constraints'] ?? $ta['special_constraints'] ?? [];
+        foreach (array_values($constraintsSrc) as $i => $c) {
             $c = trim((string) $c);
             if ($c !== '') {
                 $units['rp_constraint_'.$i] = $c;
             }
         }
-        foreach (array_values($ta['potential_user_queries'] ?? []) as $i => $q) {
+        $queriesSrc = $arch['potential_client_queries'] ?? $ta['potential_user_queries'] ?? [];
+        foreach (array_values($queriesSrc) as $i => $q) {
             $q = trim((string) $q);
             if ($q !== '') {
                 $units['rp_query_'.$i] = $q;
@@ -311,13 +389,34 @@ class FtShortRouteRuTranslator
                 continue;
             }
             foreach ([
+                'title' => $m['day_title'] ?? $m['day_description'] ?? null,
                 'desc' => $m['day_description'] ?? null,
+                'formula' => $m['day_formula_check'] ?? null,
+                'wildcard' => $m['signature_wildcard'] ?? null,
                 'logic' => $m['audience_adapted_logic'] ?? $m['practical_logic'] ?? null,
-                'log' => $m['logistics_and_timing'] ?? $m['logistics_and_fatigue'] ?? null,
+                'log' => $m['logistics_and_safety']['ztl_and_parking_solution']
+                    ?? $m['logistics_and_timing']
+                    ?? $m['logistics_and_fatigue']
+                    ?? null,
             ] as $suf => $v) {
                 $v = trim((string) $v);
                 if ($v !== '') {
                     $units['rp_micro_'.$i.'_'.$suf] = $v;
+                }
+            }
+            foreach (array_values($m['locations_selection_logic'] ?? []) as $li => $loc) {
+                if (! is_array($loc)) {
+                    continue;
+                }
+                foreach ([
+                    'name' => $loc['location_name'] ?? null,
+                    'why' => $loc['selection_reason'] ?? null,
+                    'slot' => $loc['allocated_time_slot'] ?? null,
+                ] as $suf => $v) {
+                    $v = trim((string) $v);
+                    if ($v !== '') {
+                        $units['rp_micro_'.$i.'_loc'.$li.'_'.$suf] = $v;
+                    }
                 }
             }
         }
@@ -398,19 +497,23 @@ class FtShortRouteRuTranslator
      */
     private function buildReverseRu(array $he, array $done): array
     {
+        $archHe = is_array($he['trip_archetype'] ?? null) ? $he['trip_archetype'] : [];
+        $tpHe = is_array($archHe['target_profile'] ?? null) ? $archHe['target_profile'] : [];
         $taHe = is_array($he['target_audience'] ?? null) ? $he['target_audience'] : [];
         $macroHe = is_array($he['macro_architecture'] ?? null) ? $he['macro_architecture'] : [];
         $ftHe = is_array($he['fine_tune'] ?? null) ? $he['fine_tune'] : [];
         $answerHe = is_array($ftHe['answer'] ?? null) ? $ftHe['answer'] : [];
 
+        $constraintsSrc = $tpHe['special_constraints'] ?? $taHe['special_constraints'] ?? [];
         $constraints = [];
-        foreach (array_values($taHe['special_constraints'] ?? []) as $i => $_) {
+        foreach (array_values($constraintsSrc) as $i => $_) {
             if (isset($done['rp_constraint_'.$i])) {
                 $constraints[] = $done['rp_constraint_'.$i];
             }
         }
+        $queriesSrc = $archHe['potential_client_queries'] ?? $taHe['potential_user_queries'] ?? [];
         $queries = [];
-        foreach (array_values($taHe['potential_user_queries'] ?? []) as $i => $_) {
+        foreach (array_values($queriesSrc) as $i => $_) {
             if (isset($done['rp_query_'.$i])) {
                 $queries[] = $done['rp_query_'.$i];
             }
@@ -421,13 +524,33 @@ class FtShortRouteRuTranslator
             if (! is_array($m)) {
                 continue;
             }
+            $locs = [];
+            foreach (array_values($m['locations_selection_logic'] ?? []) as $li => $loc) {
+                if (! is_array($loc)) {
+                    continue;
+                }
+                $locs[] = [
+                    'location_name' => $done['rp_micro_'.$i.'_loc'.$li.'_name'] ?? ($loc['location_name'] ?? null),
+                    'selection_reason' => $done['rp_micro_'.$i.'_loc'.$li.'_why'] ?? null,
+                    'allocated_time_slot' => $done['rp_micro_'.$i.'_loc'.$li.'_slot'] ?? ($loc['allocated_time_slot'] ?? null),
+                ];
+            }
+            $log = $done['rp_micro_'.$i.'_log'] ?? null;
+            $logic = $done['rp_micro_'.$i.'_logic'] ?? null;
             $micro[] = [
                 'day_number' => (int) ($m['day_number'] ?? 0),
+                'day_title' => $done['rp_micro_'.$i.'_title'] ?? null,
                 'day_description' => $done['rp_micro_'.$i.'_desc'] ?? null,
-                'audience_adapted_logic' => $done['rp_micro_'.$i.'_logic'] ?? null,
-                'logistics_and_timing' => $done['rp_micro_'.$i.'_log'] ?? null,
-                'practical_logic' => $done['rp_micro_'.$i.'_logic'] ?? null,
-                'logistics_and_fatigue' => $done['rp_micro_'.$i.'_log'] ?? null,
+                'day_formula_check' => $done['rp_micro_'.$i.'_formula'] ?? null,
+                'signature_wildcard' => $done['rp_micro_'.$i.'_wildcard'] ?? null,
+                'audience_adapted_logic' => $logic,
+                'logistics_and_timing' => $log,
+                'practical_logic' => $logic,
+                'logistics_and_fatigue' => $log,
+                'logistics_and_safety' => [
+                    'ztl_and_parking_solution' => $log,
+                ],
+                'locations_selection_logic' => $locs,
             ];
         }
 
@@ -447,8 +570,20 @@ class FtShortRouteRuTranslator
         $group = $done['rp_group'] ?? null;
         $pace = $done['rp_pace'] ?? null;
         $why = $done['rp_why'] ?? null;
+        $cultural = $done['rp_cultural'] ?? null;
+        $archetype = $done['rp_archetype'] ?? null;
 
         return [
+            'trip_archetype' => [
+                'archetype_name' => $archetype,
+                'target_profile' => [
+                    'group_composition' => $group,
+                    'pace_and_physical_load' => $pace,
+                    'cultural_bias' => $cultural,
+                    'special_constraints' => $constraints,
+                ],
+                'potential_client_queries' => $queries,
+            ],
             'target_audience' => [
                 'group_profile' => $group,
                 'activity_and_pace_level' => $pace,
@@ -468,8 +603,12 @@ class FtShortRouteRuTranslator
             'abstract_user_prompt' => $done['rp_abstract'] ?? null,
             'synthetic_query' => $done['rp_abstract'] ?? null,
             'macro_architecture' => [
+                'topology' => $done['rp_topology'] ?? null,
                 'region_selection_logic' => $done['rp_region'] ?? null,
+                'base_camps_logic' => $done['rp_bases'] ?? null,
                 'base_camps_strategy' => $done['rp_bases'] ?? null,
+                'highway_transit_strategy' => $done['rp_highway'] ?? null,
+                'arrival_fatigue_management' => $done['rp_fatigue'] ?? null,
                 'transit_days_handling' => $done['rp_transit'] ?? null,
                 'routing_strategy' => $done['rp_bases'] ?? null,
             ],
@@ -483,7 +622,7 @@ class FtShortRouteRuTranslator
             ],
             'principle' => $done['rp_region'] ?? null,
             'geo_logic' => $done['rp_bases'] ?? null,
-            'schema_version' => $he['schema_version'] ?? 4,
+            'schema_version' => $he['schema_version'] ?? 5,
             'translated_from_he' => true,
             'extracted_at' => now()->toIso8601String(),
         ];

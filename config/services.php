@@ -40,6 +40,7 @@ return [
         'model' => env('GEMINI_MODEL', 'gemini-3.6-flash'),
         'fallback_model' => env('GEMINI_FALLBACK_MODEL', 'gemini-3.5-flash-lite'),
         'chat_timeout' => (int) env('GEMINI_CHAT_TIMEOUT', 900),
+        'connect_timeout' => (int) env('GEMINI_CONNECT_TIMEOUT', 30),
         'pipeline_delay_seconds' => (int) env('GEMINI_PIPELINE_DELAY_SECONDS', 8),
         // New Short RAG (free-tier): пауза между маршрутами; 0 = взять pipeline_delay_seconds.
         'nsr_pipeline_delay_seconds' => (int) env('GEMINI_NSR_PIPELINE_DELAY_SECONDS', 20),
@@ -49,6 +50,14 @@ return [
         'embedding_dimensions' => (int) env('GEMINI_EMBEDDING_DIMENSIONS', 768),
         'embedding_timeout' => (int) env('GEMINI_EMBEDDING_TIMEOUT', 300),
         'pro_key' => env('GEMINI_PRO_API_KEY'),
+    ],
+
+    'claude' => [
+        'key' => env('CLAUDE_API_KEY'),
+        'model' => env('CLAUDE_MODEL', 'claude-sonnet-5-5'),
+        'chat_timeout' => (int) env('CLAUDE_CHAT_TIMEOUT', 900),
+        'max_tokens' => (int) env('CLAUDE_MAX_TOKENS', 16384),
+        'pipeline_delay_seconds' => (int) env('CLAUDE_PIPELINE_DELAY_SECONDS', 12),
     ],
 
     /*

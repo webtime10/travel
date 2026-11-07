@@ -285,7 +285,7 @@ PROMPT;
         ];
 
         if (str_starts_with($model, 'gemini-3')) {
-            $payload['generationConfig']['thinkingConfig'] = ['thinkingLevel' => 'minimal'];
+            $payload['generationConfig']['thinkingConfig'] = ['thinkingLevel' => 'low'];
         }
 
         try {

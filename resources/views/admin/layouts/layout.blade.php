@@ -245,7 +245,7 @@
         <li class="menu-item {{ request()->routeIs('admin.ft-short-routes.*') ? 'active' : '' }}">
           <a href="{{ route('admin.ft-short-routes.index') }}" class="menu-link">
             <i class="menu-icon tf-icons bx bx-brain"></i>
-            <div>{{ __('ft_short.menu') }}</div>
+            <div>FT Short routes</div>
           </a>
         </li>
         <li class="menu-item {{ request()->routeIs('admin.saved-routes.*') ? 'active' : '' }}">

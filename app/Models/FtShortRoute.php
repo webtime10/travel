@@ -21,6 +21,8 @@ class FtShortRoute extends Model
         'ru_units',
         'reverse_principle',
         'reverse_principle_ru',
+        'reverse_principle_claude',
+        'reverse_principle_claude_ru',
     ];
 
     protected $casts = [
@@ -30,11 +32,21 @@ class FtShortRoute extends Model
         'ru_units' => 'array',
         'reverse_principle' => 'array',
         'reverse_principle_ru' => 'array',
+        'reverse_principle_claude' => 'array',
+        'reverse_principle_claude_ru' => 'array',
     ];
 
     public function hasReversePrinciple(): bool
     {
         $rp = $this->reverse_principle;
+
+        return is_array($rp) && empty($rp['skipped']) && $rp !== [] && $this->reversePrincipleIsHebrew($rp);
+    }
+
+    /** Claude/Anthropic разбор (отдельный слот, не трогает Gemini). */
+    public function hasReversePrincipleClaude(): bool
+    {
+        $rp = $this->reverse_principle_claude;
 
         return is_array($rp) && empty($rp['skipped']) && $rp !== [] && $this->reversePrincipleIsHebrew($rp);
     }
@@ -52,6 +64,26 @@ class FtShortRoute extends Model
         }
 
         $he = $this->reverse_principle;
+        if (is_array($he) && $he !== [] && empty($he['skipped']) && $this->reversePrincipleIsHebrew($he)) {
+            return $he;
+        }
+
+        return null;
+    }
+
+    /** Claude HE / RU — параллельно Gemini. */
+    public function reversePrincipleClaudeForDisplay(bool $preferRu = false): ?array
+    {
+        if ($preferRu) {
+            $ru = $this->reverse_principle_claude_ru;
+            if (is_array($ru) && $ru !== [] && empty($ru['skipped'])) {
+                return $ru;
+            }
+
+            return null;
+        }
+
+        $he = $this->reverse_principle_claude;
         if (is_array($he) && $he !== [] && empty($he['skipped']) && $this->reversePrincipleIsHebrew($he)) {
             return $he;
         }

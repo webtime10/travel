@@ -6,61 +6,55 @@ use App\Models\AppSetting;
 use App\Models\FtShortRoute;
 
 /**
- * Обратный разбор FT Short — промпт директора: аудитория / скрытый смысл / почему так.
- * fine_tune.question + days — отдельно для датасета (places_text, без location_id).
+ * Обратный разбор FT Short — мастер-промпт авторской логики (архетип / DNA / FineTune).
+ * schema v5: trip_archetype + macro + micro + fine_tune.
+ *
+ * Один рабочий промпт — на русском (админка).
+ * Провайдер разбора: gemini | claude.
+ * Ответ модели: string values на иврите → reverse_principle; RU-зеркало — отдельным переводом.
  */
 class FtShortRouteReverseEngineer
 {
-    public const SCHEMA_VERSION = 4;
+    public const SCHEMA_VERSION = 5;
 
-    /** Ивритский промпт — уходит в Gemini. */
-    public const PROMPT_SETTING_KEY = 'travel.reverse_engineer.ft_short_route_prompt_he_v3';
+    /** @deprecated Зеркало HE больше не используется; оставлен для старых ключей в БД. */
+    public const PROMPT_SETTING_KEY = 'travel.reverse_engineer.ft_short_route_prompt_he_v5';
 
-    /** Русский промпт — только UI (чтение/правка). */
-    public const PROMPT_SETTING_KEY_RU = 'travel.reverse_engineer.ft_short_route_prompt_ru_v3';
+    /** Единственный рабочий промпт (русский). */
+    public const PROMPT_SETTING_KEY_RU = 'travel.reverse_engineer.ft_short_route_prompt_ru_v7';
 
-    /** @deprecated старый ключ смеси EN/RU */
-    private const PROMPT_SETTING_KEY_LEGACY = 'travel.reverse_engineer.ft_short_route_prompt';
+    public function __construct(
+        private GeminiJsonClient $gemini,
+        private ClaudeJsonClient $claude,
+    ) {}
 
-    public function __construct(private GeminiJsonClient $gemini) {}
-
-    /** Промпт для UI: he|ru. В Gemini всегда resolvePromptHe(). */
-    public static function resolvePromptForUi(string $uiLang): string
+    /** В админке всегда русский промпт (и при UI he, и при UI ru). */
+    public static function resolvePromptForUi(string $uiLang = 'ru'): string
     {
-        return strtolower($uiLang) === 'ru'
-            ? self::resolvePromptRu()
-            : self::resolvePromptHe();
+        return self::resolvePromptRu();
     }
 
     public static function resolvePrompt(): string
     {
-        return self::resolvePromptHe();
+        return self::resolvePromptRu();
     }
 
+    /** @deprecated alias → русский рабочий промпт */
     public static function resolvePromptHe(): string
     {
-        $stored = trim((string) AppSetting::getValue(self::PROMPT_SETTING_KEY, ''));
-        if ($stored !== ''
-            && str_contains($stored, 'LANGUAGE_HE_ONLY_V3')
-            && str_contains($stored, 'target_audience')
-            && str_contains($stored, 'why_route_fits_audience')
-        ) {
-            return $stored;
-        }
-
-        $fresh = self::defaultPromptHe();
-        AppSetting::putValue(self::PROMPT_SETTING_KEY, $fresh);
-
-        return $fresh;
+        return self::resolvePromptRu();
     }
 
     public static function resolvePromptRu(): string
     {
         $stored = trim((string) AppSetting::getValue(self::PROMPT_SETTING_KEY_RU, ''));
+
+        // Ручное «Сохранить» — свято: если схема на месте, не затираем (метку LANGUAGE_* можно удалить).
         if ($stored !== ''
-            && str_contains($stored, 'LANGUAGE_RU_UI_V3')
-            && str_contains($stored, 'target_audience')
-            && str_contains($stored, 'why_route_fits_audience')
+            && str_contains($stored, 'trip_archetype')
+            && str_contains($stored, 'signature_wildcard')
+            && str_contains($stored, 'fine_tune')
+            && ! self::promptNeedsForcedUpgrade($stored)
         ) {
             return $stored;
         }
@@ -71,208 +65,177 @@ class FtShortRouteReverseEngineer
         return $fresh;
     }
 
+    /** Старые заводские версии — один раз подтянуть дефолт. Свой сохранённый текст без LANGUAGE_* не трогаем. */
+    private static function promptNeedsForcedUpgrade(string $stored): bool
+    {
+        foreach ([
+            'LANGUAGE_HE_ONLY_V5',
+            'LANGUAGE_RU_UI_V5',
+            'LANGUAGE_RU_INSTR_HE_OUT_V5',
+            'LANGUAGE_RU_INSTR_HE_OUT_V6',
+        ] as $old) {
+            if (str_contains($stored, $old)) {
+                return true;
+            }
+        }
+
+        // Старая фраза, из‑за которой путали модель — принудительно обновить дефолт.
+        if (str_contains($stored, 'русский перевод сделает админка')) {
+            return true;
+        }
+
+        return false;
+    }
+
     public static function defaultPrompt(): string
     {
-        return self::defaultPromptHe();
+        return self::defaultPromptRu();
     }
 
-    /** Полностью на иврите — рабочий промпт для Gemini. */
+    /**
+     * В Gemini — без служебной метки LANGUAGE_* (она только для версии в БД/админке).
+     */
+    public static function promptForGemini(string $prompt): string
+    {
+        $lines = preg_split("/\r\n|\n|\r/", $prompt) ?: [];
+        $out = [];
+        foreach ($lines as $line) {
+            if (preg_match('/^\s*LANGUAGE_[A-Z0-9_]+\s*$/', $line)) {
+                continue;
+            }
+            $out[] = $line;
+        }
+
+        return trim(implode("\n", $out));
+    }
+
+    /** @deprecated alias → русский рабочий промпт */
     public static function defaultPromptHe(): string
     {
-        return <<<'PROMPT'
-LANGUAGE_HE_ONLY_V3
-
-שפת התשובה (חובה):
-כל ערכי המחרוזות ב־JSON חייבים להיות בעברית בלבד.
-אין לכתוב רוסית. אין לכתוב אנגלית. מפתחות ה־JSON נשארים בלטינית לפי הסכימה.
-אם התשובה ברוסית — היא פסולה.
-
-פרומפט להנדסה לאחור: מיקוד בקהל היעד ובלוגיקת המחבר
-
-אתה אנליסט בכיר של נתוני תיירות ומומחה לפרופיל לקוחות בטיולי רכב.
-
-מטרה:
-לבצע הנדסה לאחור עמוקה של מסלול מומחה אמיתי. המיקוד העיקרי: קהל היעד (למי הטיול, למה נבנה כך, אילו כאבים כל פרט סוגר).
-אל תצמצם ללוגיסטיקה יבשה. צריך את סיפור ההחלטה של המחבר. התוצאה תיכנס למערך Fine-Tuning.
-
-כלל פרגמטיות:
-בלי מטפורות ספרותיות. הסבר דרך צרכים אמיתיים: סיבולת, גיל ילדים, דת, פחד מכבישים הרריים, עייפות נהיגה. עצירת מעבר על הכביש — כתוב כך (בעברית).
-
-אזורים ו־Grounding:
-- אזורים ובסיסים רק מתוך SOURCE. אל תוסיף אזורים זרים.
-- places_text ב־fine_tune — מהקלט (שמות מקומות כמו במקור; תפקידי ימים — בעברית).
-
-קלט: אחרי --- SOURCE --- יופיע JSON (title, route_text, days). ענה ב־JSON בלבד.
-
-1. דיוקן קהל (הרכב / קצב / מגבלות) — בעברית.
-2. למה המסלול מתאים + 3 ניסוחי בקשה של לקוח — בעברית.
-3. מאקרו: אזורים, בסיסים, מעבר — בעברית.
-4. מיקרו: עד 5 ימים מייצגים — בעברית.
-5. fine_tune.question / summary / כותרות ימים — בעברית; places_text מהמקור.
-
-סכימת JSON (ערכים בעברית בלבד):
-
-{
-  "target_audience": {
-    "group_profile": "תיאור מפורט של הרכב הקבוצה",
-    "activity_and_pace_level": "קצב, מאמץ, מגבלות",
-    "special_constraints": [
-      "מגבלות כשרות / שבת / ילדים וכו'"
-    ],
-    "why_route_fits_audience": "למה המסלול מתאים בדיוק לפרופיל הזה",
-    "potential_user_queries": [
-      "ניסוח קצר",
-      "ניסוח עם כאבים",
-      "ניסוח מפורט"
-    ]
-  },
-  "macro_architecture": {
-    "region_selection_logic": "למה האזורים האלה לפרופיל הזה",
-    "base_camps_strategy": "בסיסים / החלפת מלונות ולמה",
-    "transit_days_handling": "איך מותאמים ימי מעבר"
-  },
-  "micro_clustering": [
-    {
-      "day_number": 1,
-      "day_description": "תפקיד היום בקצרה",
-      "audience_adapted_logic": "למה הנקודות והסדר מתאימים לקהל",
-      "logistics_and_timing": "עייפות נהיגה, תזמון"
-    }
-  ],
-  "fine_tune": {
-    "question": "יעדים + N ימים (+ בקשה). ייחודי למסלול.",
-    "answer": {
-      "summary": "למי + אזורים + בסיסים — בקצרה.",
-      "days": [
-        {
-          "day_index": 1,
-          "title": "תפקיד היום",
-          "places_text": "מקומות מהמקור"
-        }
-      ]
-    }
-  }
-}
-
-תזכורת אחרונה: כל ערך טקסט = עברית בלבד. בלי רוסית. בלי אנגלית חופשית.
-PROMPT;
+        return self::defaultPromptRu();
     }
 
-    /** Полностью на русском — для UI; в Gemini не уходит. */
+    /**
+     * Единственный рабочий промпт: полный мастер на русском + ответ values на иврите.
+     * Показывается в админке и уходит в Gemini.
+     */
     public static function defaultPromptRu(): string
     {
         return <<<'PROMPT'
-LANGUAGE_RU_UI_V3
+LANGUAGE_RU_INSTR_HE_OUT_V7
 
-Важно для админки:
-Это русская копия промпта для чтения и правки.
-В Gemini всегда отправляется ивритская версия; ответ обратного разбора — только на иврите (для FineTunes).
+Мастер-Промпт Обратного Инжиниринга: Алгоритмизация Авторской Логики
 
-Язык ответа модели (обязательно):
-Все строковые значения JSON — только на иврите.
-Не на русском. Не на английском. Ключи JSON — латиницей по схеме.
-Ответ на русском считается неверным.
+ЯЗЫК:
+Инструкция — на русском. Все строковые values в JSON — только на иврите (עברית בלבד).
+Ключи JSON — латиница. В values нет кириллицы и нет английских предложений.
+places_text в fine_tune — как во входе (SOURCE). Числа и true/false — как указано.
 
-Промпт обратного разбора: фокус на аудитории и логике автора
+Ты — ведущий системный архитектор туристических данных и эксперт по обратному инжинирингу авторских маршрутов.
 
-Ты — старший аналитик туристических данных и эксперт по профилю клиентов в автопутешествиях.
+ЦЕЛЬ ТВОЕЙ РАБОТЫ:
+Проведи глубокий логистический и смысловой обратный инжиниринг предоставленного готового маршрута автора. Извлеки скрытый ход мыслей (Chain of Thought), строгие авторские правила отбора и архетипы решений, на которых этот маршрут был построен.
+Результат разбора напрямую поступает в обучающий датасет (Fine-Tuning) и реляционную базу данных, чтобы дообученная модель мыслила в точности как автор-эксперт.
 
-Цель:
-Глубокий обратный разбор реального маршрута эксперта. Главный фокус — целевая аудитория (для кого тур, почему собран так, какие боли закрывает каждая деталь).
-Не своди к сухой логистике. Нужна история решения автора. Результат пойдёт в датасет Fine-Tuning.
+ЖЁСТКИЕ ПРАВИЛА АНАЛИЗА (Author's Operating DNA):
+1. Прагматизм и ноль литературной «воды»: объясняй решения через время в пути, физические силы, световой день и доступность инфраструктуры. Никаких «эмоциональных градиентов» и «философии дорог».
+2. Безоговорочный приоритет Вау-фактора: автор всегда предпочитает всемирно известные, ошеломляющие локации (Сирмионе, Брайес) серым и тихим аналогам (Пескьера, Доббьяко), даже если клиент просит «без людей».
+3. Формула дня: светлое время суток — 1–2 природных якоря или активности (озеро, подъёмник, водопад, рафтинг); вечер — атмосферный городок для променада и ужина. Городок может повторяться два вечера подряд, если база расположена рядом.
+4. Скоростная логистика: между регионами движение идёт строго по быстрым автострадам (Autostrada), без искусственных панорамных объездов. Съезды в сторону (30–60 мин) допустимы только ради супер-доминант (expert_score >= 90).
+5. Календарная защита: детские парки (Гардаленд и др.) и точки массового скопления никогда не ставятся на субботу и воскресенье.
+6. Парковки и ZTL: высокий сезон и риск штрафов ZTL не повод отказываться от жемчужин; город всегда комплектуется точной парковкой вне зоны камер.
+7. Авторский сюрприз (Wildcard): автор часто внедряет в стандартный набор 1–2 неочевидные точки (панорамная терраса, тайное ущелье), превосходящие ожидания туриста.
+8. Плотность без жалости: отсутствие пустых пауз; рабочий световой день длится 6–8 часов активного времени, а чистое вождение жёстко ограничено потолком в 4 часа в сутки (плечо радиального выезда — не более 2 часов в одну сторону).
 
-Правило прагматизма:
-Без литературных метафор. Объясняй через реальные потребности: выносливость, возраст детей, религия, страх горных дорог, усталость от руля. Транзитный стоп по трассе — так и пиши (на иврите в ответе модели).
-
-Регионы и grounding:
-- Регионы и базы только из SOURCE. Не добавляй чужие районы.
-- places_text в fine_tune — из входа (топонимы как в источнике; роли дней — на иврите в ответе).
-
-Вход: после --- SOURCE --- будет JSON (title, route_text, days). Ответ — строго JSON.
-
-1. Портрет аудитории (состав / темп / ограничения) — на иврите в ответе.
-2. Почему маршрут подходит + 3 формулировки запроса клиента — на иврите.
-3. Макро: регионы, базы, транзит — на иврите.
-4. Микро: до 5 показательных дней — на иврите.
-5. fine_tune.question / summary / заголовки дней — на иврите; places_text из источника.
-
-Схема JSON (значения в ответе модели — на иврите):
+Вход после --- SOURCE ---: JSON (title, route_text, days). Ответ — строго JSON по схеме ниже.
+В схеме ниже подсказки полей на русском; заполняй values на иврите.
 
 {
-  "target_audience": {
-    "group_profile": "подробное описание состава группы",
-    "activity_and_pace_level": "темп, нагрузка, ограничения",
-    "special_constraints": [
-      "ограничения: кашрут / шаббат / дети и т.п."
-    ],
-    "why_route_fits_audience": "почему маршрут идеален именно для этого профиля",
-    "potential_user_queries": [
-      "короткая формулировка",
-      "с болями",
-      "детальная"
+  "trip_archetype": {
+    "archetype_name": "название архетипа на иврите (напр. семья+Гарда / динамичная пара+Доломиты / соблюдающие)",
+    "target_profile": {
+      "group_composition": "состав группы — на иврите",
+      "pace_and_physical_load": "уровень активности — на иврите",
+      "cultural_bias": "культурный фильтр (по умолчанию 0 церквей/музеев) — на иврите",
+      "special_constraints": ["ограничения на иврите: шаббат, кашрут…"]
+    },
+    "potential_client_queries": [
+      "короткий эмоциональный запрос — на иврите",
+      "прагматичный с болями — на иврите",
+      "развёрнутый с рамками — на иврите"
     ]
   },
   "macro_architecture": {
-    "region_selection_logic": "почему эти регионы для этого профиля",
-    "base_camps_strategy": "базы / смена отелей и почему",
-    "transit_days_handling": "как адаптированы транзитные дни"
+    "topology": "Hub-and-Spoke или Linear Road-Trip",
+    "base_camps_logic": "почему базы и шаг смены — на иврите",
+    "highway_transit_strategy": "длинные переезды / Autostrada — на иврите",
+    "arrival_fatigue_management": "День1 ≥3ч? как День2 компенсирует — на иврите"
   },
   "micro_clustering": [
     {
       "day_number": 1,
-      "day_description": "кратко роль дня",
-      "audience_adapted_logic": "почему точки и порядок подходят аудитории",
-      "logistics_and_timing": "усталость от руля, тайминг"
+      "day_title": "краткое название дня — на иврите",
+      "day_formula_check": "утро природа + день активность + вечер город — на иврите",
+      "weekend_shield_applied": false,
+      "signature_wildcard": "авторский сюрприз или пусто — на иврите",
+      "locations_selection_logic": [
+        {
+          "location_name": "название точки (как в SOURCE)",
+          "selection_reason": "почему эта точка — на иврите",
+          "allocated_time_slot": "2–4 часа или фото-стоп 20–40 мин"
+        }
+      ],
+      "logistics_and_safety": {
+        "estimated_driving_time_min": 180,
+        "ztl_and_parking_solution": "парковка вне ZTL — на иврите"
+      }
     }
   ],
   "fine_tune": {
-    "question": "хабы + N дней (+ пожелание). Уникально для тура.",
+    "question": "короткий уникальный запрос клиента — на иврите",
     "answer": {
-      "summary": "для кого + регионы + базы — кратко.",
+      "summary": "для кого + регионы + базы — на иврите",
       "days": [
         {
           "day_index": 1,
-          "title": "роль дня",
-          "places_text": "места из источника"
+          "title": "роль дня — на иврите",
+          "places_text": "места из SOURCE"
         }
       ]
     }
   }
 }
 
-Напоминание: в ответе Gemini каждый текстовый value = иврит. Без русского. Без английского.
+Обязательно: все дни входа в fine_tune.answer.days. Values ответа — только иврит (без кириллицы).
 PROMPT;
     }
 
+    /** Сохраняет единственный рабочий (русский) промпт. $uiLang игнорируется. */
     public static function savePromptForUi(string $uiLang, string $prompt): void
     {
-        $prompt = trim($prompt);
-        if (strtolower($uiLang) === 'ru') {
-            AppSetting::putValue(self::PROMPT_SETTING_KEY_RU, $prompt);
-        } else {
-            AppSetting::putValue(self::PROMPT_SETTING_KEY, $prompt);
-        }
+        AppSetting::putValue(self::PROMPT_SETTING_KEY_RU, trim($prompt));
     }
 
+    /** Сброс к дефолту (русский). $uiLang игнорируется. */
     public static function resetPromptForUi(string $uiLang): string
     {
-        if (strtolower($uiLang) === 'ru') {
-            $fresh = self::defaultPromptRu();
-            AppSetting::putValue(self::PROMPT_SETTING_KEY_RU, $fresh);
-
-            return $fresh;
-        }
-        $fresh = self::defaultPromptHe();
-        AppSetting::putValue(self::PROMPT_SETTING_KEY, $fresh);
+        $fresh = self::defaultPromptRu();
+        AppSetting::putValue(self::PROMPT_SETTING_KEY_RU, $fresh);
 
         return $fresh;
     }
 
     /**
-     * @return array{principle: array<string, mixed>}
+     * @param  'gemini'|'claude'  $provider
+     * @return array{principle: array<string, mixed>, provider: string}
      */
-    public function extract(FtShortRoute $route): array
+    public function extract(FtShortRoute $route, string $provider = 'gemini'): array
     {
+        $provider = strtolower(trim($provider));
+        if (! in_array($provider, ['gemini', 'claude'], true)) {
+            $provider = 'gemini';
+        }
+
         $days = is_array($route->days) ? $route->days : [];
         if ($days === [] && trim((string) ($route->route_text ?? '')) === '') {
             $data = [
@@ -280,11 +243,12 @@ PROMPT;
                 'reason' => 'no_days',
                 'schema_version' => self::SCHEMA_VERSION,
                 'extracted_at' => now()->toIso8601String(),
+                're_provider' => $provider,
             ];
-            $route->reverse_principle = $data;
+            $this->storePrinciple($route, $provider, $data, clearRu: true);
             $route->save();
 
-            return ['principle' => $data];
+            return ['principle' => $data, 'provider' => $provider];
         }
 
         $daysPayload = [];
@@ -313,58 +277,98 @@ PROMPT;
             'route_text' => (string) ($route->route_text ?? ''),
             'days' => $daysPayload,
             'output_language' => 'he',
-            'note' => 'כל ערכי המחרוזות בעברית בלבד. מקומות כמו במקור.',
+            'note' => 'Все строковые values JSON — иврит. Места как в SOURCE. Без кириллицы в values.',
         ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
         $material = mb_substr((string) $material, 0, 90000);
 
-        $instruction = trim(self::resolvePromptHe());
-        if ($instruction === '') {
-            $instruction = self::defaultPromptHe();
-        }
+        $instruction = self::promptForGemini(self::resolvePromptRu() ?: self::defaultPromptRu());
 
-        $raw = $this->gemini->ask($instruction, $material, 'minimal');
+        $raw = $this->askProvider($provider, $instruction, $material);
         $data = $this->normalize($raw, $daysPayload, $this->shortQuestionFallback($route));
 
-        // Если модель всё же ответила по-русски — один жёсткий retry на иврите.
+        // Если модель всё же ответила по-русски — один жёсткий retry (values снова на иврите).
         if ($this->looksLikeRussian($data) && ! $this->looksLikeHebrew($data)) {
-            $retryInstruction = $instruction."\n\nנסה שוב: התשובה הקודמת הייתה ברוסית. כתוב מחדש את כל ה־JSON עם ערכים בעברית בלבד. בלי קירילית.";
-            $raw = $this->gemini->ask($retryInstruction, $material, 'minimal');
+            $retryInstruction = $instruction."\n\nПовтор: предыдущий ответ был на русском. Перепиши весь JSON: все string values только на иврите, без кириллицы.";
+            $raw = $this->askProvider($provider, $retryInstruction, $material);
             $data = $this->normalize($raw, $daysPayload, $this->shortQuestionFallback($route));
         }
 
         if ($this->looksLikeRussian($data) && ! $this->looksLikeHebrew($data)) {
             throw new \RuntimeException(
-                'המודל החזיר ניתוח ברוסית במקום בעברית. לחץ שוב על «קבל הנדסה לאחור».'
+                'Модель вернула разбор на русском вместо иврита. Нажми «Получить разбор» ещё раз.'
             );
         }
 
         $data['schema_version'] = self::SCHEMA_VERSION;
         $data['extracted_at'] = now()->toIso8601String();
         $data['output_language'] = 'he';
+        $data['re_provider'] = $provider;
 
-        $route->reverse_principle = $data;
-        // Новый HE: сбрасываем RU только если он был переводом со старого HE.
-        // Ошибочный русский, перенесённый из HE-слота (misplaced), оставляем во вкладке RU.
-        $oldRu = is_array($route->reverse_principle_ru) ? $route->reverse_principle_ru : null;
-        $keepMisplacedRu = is_array($oldRu)
-            && ! empty($oldRu['misplaced_russian_from_he_slot'])
-            && empty($oldRu['skipped']);
-        if (! $keepMisplacedRu) {
-            $route->reverse_principle_ru = null;
+        // Gemini и Claude — разные слоты: Claude не затирает Gemini и наоборот.
+        if ($provider === 'claude') {
+            $this->storePrinciple($route, 'claude', $data, clearRu: true);
+        } else {
+            // Новый Gemini HE: сбрасываем RU, кроме misplaced русского из HE-слота.
+            $oldRu = is_array($route->reverse_principle_ru) ? $route->reverse_principle_ru : null;
+            $keepMisplacedRu = is_array($oldRu)
+                && ! empty($oldRu['misplaced_russian_from_he_slot'])
+                && empty($oldRu['skipped']);
+            $this->storePrinciple($route, 'gemini', $data, clearRu: ! $keepMisplacedRu);
         }
         $route->save();
 
-        return ['principle' => $data];
+        return ['principle' => $data, 'provider' => $provider];
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     */
+    private function storePrinciple(FtShortRoute $route, string $provider, array $data, bool $clearRu): void
+    {
+        if ($provider === 'claude') {
+            $route->reverse_principle_claude = $data;
+            if ($clearRu) {
+                $route->reverse_principle_claude_ru = null;
+                $meta = is_array($route->meta) ? $route->meta : [];
+                unset($meta['claude_ru_units']);
+                $route->meta = $meta === [] ? null : $meta;
+            }
+
+            return;
+        }
+
+        $route->reverse_principle = $data;
+        if ($clearRu) {
+            $route->reverse_principle_ru = null;
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function askProvider(string $provider, string $instruction, string $material): array
+    {
+        if ($provider === 'claude') {
+            return $this->claude->ask($instruction, $material);
+        }
+
+        // gemini-3.8 rejects thinkingLevel MINIMAL — LOW is the floor.
+        return $this->gemini->ask($instruction, $material, 'low');
     }
 
     /** Старые RE ошибочно на русском в поле HE — отдать как RU-кандидат. */
     public static function sampleText(array $rp): string
     {
+        $arch = is_array($rp['trip_archetype'] ?? null) ? $rp['trip_archetype'] : [];
+        $tp = is_array($arch['target_profile'] ?? null) ? $arch['target_profile'] : [];
         $parts = [
+            $arch['archetype_name'] ?? null,
+            $tp['group_composition'] ?? null,
             $rp['target_audience']['group_profile'] ?? null,
             $rp['audience_portrait']['group_composition'] ?? null,
             $rp['target_audience']['why_route_fits_audience'] ?? null,
+            $rp['macro_architecture']['base_camps_logic'] ?? null,
             $rp['macro_architecture']['region_selection_logic'] ?? null,
             $rp['principle'] ?? null,
         ];
@@ -427,22 +431,31 @@ PROMPT;
      */
     private function normalize(array $raw, array $daysPayload, string $shortQuestionFallback = ''): array
     {
-        // Директорская схема target_audience + старая audience_portrait/fit
+        $arch = is_array($raw['trip_archetype'] ?? null) ? $raw['trip_archetype'] : [];
+        $tp = is_array($arch['target_profile'] ?? null) ? $arch['target_profile'] : [];
         $ta = is_array($raw['target_audience'] ?? null) ? $raw['target_audience'] : [];
         $audienceOld = is_array($raw['audience_portrait'] ?? null) ? $raw['audience_portrait'] : [];
         $fitOld = is_array($raw['audience_fit'] ?? null) ? $raw['audience_fit'] : [];
 
+        $archetypeName = $this->str($arch['archetype_name'] ?? null, 400);
         $groupProfile = $this->str(
-            $ta['group_profile'] ?? $audienceOld['group_composition'] ?? null,
+            $tp['group_composition']
+                ?? $ta['group_profile']
+                ?? $audienceOld['group_composition']
+                ?? null,
             1200
         );
         $activity = $this->str(
-            $ta['activity_and_pace_level'] ?? $audienceOld['activity_and_comfort'] ?? null,
+            $tp['pace_and_physical_load']
+                ?? $ta['activity_and_pace_level']
+                ?? $audienceOld['activity_and_comfort']
+                ?? null,
             1200
         );
+        $culturalBias = $this->str($tp['cultural_bias'] ?? null, 800);
 
         $constraints = [];
-        foreach ((array) ($ta['special_constraints'] ?? []) as $c) {
+        foreach ((array) ($tp['special_constraints'] ?? $ta['special_constraints'] ?? []) as $c) {
             $c = $this->str($c, 400);
             if ($c !== null) {
                 $constraints[] = $c;
@@ -456,12 +469,12 @@ PROMPT;
         }
 
         $whyFits = $this->str(
-            $ta['why_route_fits_audience'] ?? $fitOld['why_this_route_fits'] ?? null,
+            $ta['why_route_fits_audience'] ?? $fitOld['why_this_route_fits'] ?? $archetypeName,
             2500
         );
 
         $queries = [];
-        foreach ((array) ($ta['potential_user_queries'] ?? $fitOld['possible_queries'] ?? []) as $q) {
+        foreach ((array) ($arch['potential_client_queries'] ?? $ta['potential_user_queries'] ?? $fitOld['possible_queries'] ?? []) as $q) {
             $q = $this->str($q, 500);
             if ($q !== null) {
                 $queries[] = $q;
@@ -472,44 +485,74 @@ PROMPT;
         }
 
         $macro = is_array($raw['macro_architecture'] ?? null) ? $raw['macro_architecture'] : [];
-        $regionLogic = $this->str($macro['region_selection_logic'] ?? $raw['principle'] ?? null, 2000);
+        $topology = $this->str($macro['topology'] ?? null, 200);
         $bases = $this->str(
-            $macro['base_camps_strategy'] ?? $macro['routing_strategy'] ?? $raw['geo_logic'] ?? null,
+            $macro['base_camps_logic']
+                ?? $macro['base_camps_strategy']
+                ?? $macro['routing_strategy']
+                ?? $raw['geo_logic']
+                ?? null,
             2000
         );
-        $transit = $this->str($macro['transit_days_handling'] ?? null, 2000);
+        $highway = $this->str($macro['highway_transit_strategy'] ?? null, 2000);
+        $fatigue = $this->str($macro['arrival_fatigue_management'] ?? null, 2000);
+        $regionLogic = $this->str(
+            $macro['region_selection_logic'] ?? $highway ?? $raw['principle'] ?? $archetypeName,
+            2000
+        );
+        $transit = $this->str($macro['transit_days_handling'] ?? $highway, 2000);
 
         $microList = [];
         foreach ((array) ($raw['micro_clustering'] ?? []) as $row) {
             if (! is_array($row)) {
                 continue;
             }
+            $locs = [];
+            foreach ((array) ($row['locations_selection_logic'] ?? []) as $loc) {
+                if (! is_array($loc)) {
+                    continue;
+                }
+                $locs[] = [
+                    'location_name' => $this->str($loc['location_name'] ?? null, 200),
+                    'selection_reason' => $this->str($loc['selection_reason'] ?? null, 800),
+                    'allocated_time_slot' => $this->str($loc['allocated_time_slot'] ?? null, 200),
+                ];
+            }
+            $logistics = is_array($row['logistics_and_safety'] ?? null) ? $row['logistics_and_safety'] : [];
+            $driveMin = (int) ($logistics['estimated_driving_time_min'] ?? 0);
+            $dayTitle = $this->str($row['day_title'] ?? $row['day_description'] ?? null, 400);
+            $formula = $this->str($row['day_formula_check'] ?? $row['audience_adapted_logic'] ?? $row['practical_logic'] ?? null, 1500);
+            $wildcard = $this->str($row['signature_wildcard'] ?? null, 800);
+            $ztl = $this->str(
+                $logistics['ztl_and_parking_solution']
+                    ?? $row['logistics_and_timing']
+                    ?? $row['logistics_and_fatigue']
+                    ?? null,
+                800
+            );
+            $weekend = $row['weekend_shield_applied'] ?? null;
+            if (is_string($weekend)) {
+                $weekend = in_array(mb_strtolower(trim($weekend)), ['1', 'true', 'yes', 'да'], true);
+            } else {
+                $weekend = (bool) $weekend;
+            }
+
             $microList[] = [
                 'day_number' => (int) ($row['day_number'] ?? 0),
-                'day_description' => $this->str($row['day_description'] ?? null, 400),
-                'audience_adapted_logic' => $this->str(
-                    $row['audience_adapted_logic'] ?? $row['practical_logic'] ?? null,
-                    1500
-                ),
-                'logistics_and_timing' => $this->str(
-                    $row['logistics_and_timing']
-                        ?? $row['logistics_and_fatigue']
-                        ?? $row['logistics_and_ztl']
-                        ?? null,
-                    800
-                ),
-                // совместимость со старым UI
-                'practical_logic' => $this->str(
-                    $row['audience_adapted_logic'] ?? $row['practical_logic'] ?? null,
-                    1500
-                ),
-                'logistics_and_fatigue' => $this->str(
-                    $row['logistics_and_timing']
-                        ?? $row['logistics_and_fatigue']
-                        ?? $row['logistics_and_ztl']
-                        ?? null,
-                    800
-                ),
+                'day_title' => $dayTitle,
+                'day_description' => $dayTitle,
+                'day_formula_check' => $formula,
+                'weekend_shield_applied' => $weekend,
+                'signature_wildcard' => $wildcard,
+                'locations_selection_logic' => $locs,
+                'logistics_and_safety' => [
+                    'estimated_driving_time_min' => $driveMin > 0 ? $driveMin : null,
+                    'ztl_and_parking_solution' => $ztl,
+                ],
+                'audience_adapted_logic' => $formula,
+                'logistics_and_timing' => $ztl,
+                'practical_logic' => $formula,
+                'logistics_and_fatigue' => $ztl,
             ];
         }
 
@@ -520,12 +563,12 @@ PROMPT;
 
         $ft = is_array($raw['fine_tune'] ?? null) ? $raw['fine_tune'] : [];
         $ftQuestion = $this->str($ft['question'] ?? null, 400);
-        if ($ftQuestion === '') {
+        if ($ftQuestion === null || $ftQuestion === '') {
             $ftQuestion = $this->str($shortQuestionFallback !== '' ? $shortQuestionFallback : ($queries[0] ?? $abstract), 400);
         }
         $ftAnswerRaw = is_array($ft['answer'] ?? null) ? $ft['answer'] : [];
         $ftSummary = $this->str(
-            $ftAnswerRaw['summary'] ?? trim(($whyFits ?? '').' '.($bases ?? '')),
+            $ftAnswerRaw['summary'] ?? trim(($archetypeName ?? '').' '.($bases ?? '')),
             2000
         );
 
@@ -558,6 +601,16 @@ PROMPT;
         }
 
         return [
+            'trip_archetype' => [
+                'archetype_name' => $archetypeName,
+                'target_profile' => [
+                    'group_composition' => $groupProfile,
+                    'pace_and_physical_load' => $activity,
+                    'cultural_bias' => $culturalBias,
+                    'special_constraints' => $constraints,
+                ],
+                'potential_client_queries' => $queries,
+            ],
             'target_audience' => [
                 'group_profile' => $groupProfile,
                 'activity_and_pace_level' => $activity,
@@ -565,7 +618,6 @@ PROMPT;
                 'why_route_fits_audience' => $whyFits,
                 'potential_user_queries' => $queries,
             ],
-            // aliases для старого UI / FineTune exporter
             'audience_portrait' => [
                 'group_composition' => $groupProfile,
                 'activity_and_comfort' => $activity,
@@ -578,10 +630,14 @@ PROMPT;
             'abstract_user_prompt' => $abstract,
             'synthetic_query' => $abstract,
             'macro_architecture' => [
-                'region_selection_logic' => $regionLogic,
+                'topology' => $topology,
+                'base_camps_logic' => $bases,
                 'base_camps_strategy' => $bases,
+                'highway_transit_strategy' => $highway,
+                'arrival_fatigue_management' => $fatigue,
+                'region_selection_logic' => $regionLogic,
                 'transit_days_handling' => $transit,
-                'routing_strategy' => trim(($bases ?? '').($transit ? ' '.$transit : '')),
+                'routing_strategy' => trim(($bases ?? '').($highway ? ' '.$highway : '')),
             ],
             'micro_clustering' => $microList,
             'fine_tune' => [

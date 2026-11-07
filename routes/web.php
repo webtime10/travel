@@ -129,7 +129,13 @@ Route::prefix('admin')
         Route::post('ft-short-routes/translate-ru-batch', [FtShortRouteController::class, 'translateRuBatch'])->name('ft-short-routes.translate-ru-batch');
         Route::post('ft-short-routes/reverse-prompt', [FtShortRouteController::class, 'saveReversePrompt'])->name('ft-short-routes.reverse-prompt.save');
         Route::post('ft-short-routes/reverse-prompt/reset', [FtShortRouteController::class, 'resetReversePrompt'])->name('ft-short-routes.reverse-prompt.reset');
+        Route::get('ft-short-routes/reverse-pipeline/status', [FtShortRouteController::class, 'reversePipelineStatus'])->name('ft-short-routes.reverse-pipeline.status');
+        Route::post('ft-short-routes/reverse-pipeline/start', [FtShortRouteController::class, 'reversePipelineStart'])->name('ft-short-routes.reverse-pipeline.start');
+        Route::post('ft-short-routes/reverse-pipeline/cancel', [FtShortRouteController::class, 'reversePipelineCancel'])->name('ft-short-routes.reverse-pipeline.cancel');
         Route::get('ft-short-routes/{ft_short_route}', [FtShortRouteController::class, 'show'])->name('ft-short-routes.show');
+        Route::get('ft-short-routes/{ft_short_route}/pdf/{lang}', [FtShortRouteController::class, 'pdf'])
+            ->whereIn('lang', ['he', 'ru'])
+            ->name('ft-short-routes.pdf');
         Route::post('ft-short-routes/{ft_short_route}/rebuild', [FtShortRouteController::class, 'rebuildOne'])->name('ft-short-routes.rebuild');
         Route::post('ft-short-routes/{ft_short_route}/translate-ru', [FtShortRouteController::class, 'translateRu'])->name('ft-short-routes.translate-ru');
         Route::post('ft-short-routes/{ft_short_route}/reverse', [FtShortRouteController::class, 'reverseOne'])->name('ft-short-routes.reverse');

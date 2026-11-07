@@ -98,7 +98,10 @@ class GeminiKeyPool
                 || str_contains($msg, 'API_KEY')
                 || str_contains($msg, 'quota')
                 || str_contains(mb_strtolower($msg), 'credits are depleted')
-                || str_contains($msg, 'PERMISSION_DENIED');
+                || str_contains($msg, 'PERMISSION_DENIED')
+                || str_contains($msg, 'cURL error 28')
+                || str_contains(mb_strtolower($msg), 'timed out')
+                || str_contains(mb_strtolower($msg), 'timeout/connect');
         };
 
         $attempts = count($keys);

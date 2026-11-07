@@ -2,8 +2,10 @@
 
 namespace App\Services;
 
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
+use Throwable;
 
 class GeminiJsonClient
 {
@@ -33,18 +35,17 @@ class GeminiJsonClient
     private function askOnce(string $instruction, string $material, string $thinking): array
     {
         $primary = trim((string) config('services.gemini.model', 'gemini-3.6-flash'));
-        $fallback = trim((string) config('services.gemini.fallback_model', 'gemini-2.5-flash'));
-        // Цепочка при 503 high demand: primary → fallback → более «старые» стабильные.
+        $fallback = trim((string) config('services.gemini.fallback_model', 'gemini-2.0-flash'));
+        // Цепочка: primary → fallback. Мёртвые 2.0 / 2.5 / flash-latest не трогаем.
         $models = array_values(array_unique(array_filter([
             $primary,
-            $fallback,
-            'gemini-2.5-flash',
-            'gemini-2.0-flash',
-            'gemini-flash-latest',
+            $fallback !== '' ? $fallback : null,
         ])));
+        // Полный таймаут чтения большой; connect — короткий, чтобы мёртвый сокет не жевал 15 мин.
         $timeout = max(60, (int) config('services.gemini.chat_timeout', 900));
+        $connectTimeout = max(5, min(60, (int) config('services.gemini.connect_timeout', 30)));
 
-        $raw = $this->keys->withKey(function (string $apiKey) use ($models, $instruction, $material, $timeout, $thinking) {
+        $raw = $this->keys->withKey(function (string $apiKey) use ($models, $instruction, $material, $timeout, $connectTimeout, $thinking) {
             $last = null;
             foreach ($models as $modelIndex => $model) {
                 $payload = [
@@ -59,23 +60,51 @@ class GeminiJsonClient
                     ],
                 ];
                 if (str_starts_with($model, 'gemini-3')) {
-                    // gemini-3.8+ rejects MINIMAL; map to LOW.
-                    $level = strtoupper($thinking) === 'MINIMAL' && str_contains($model, '3.8')
-                        ? 'low'
-                        : $thinking;
+                    // gemini-3.8+ rejects MINIMAL; floor is LOW. API accepts low|medium|high.
+                    $level = strtolower(trim($thinking));
+                    if ($level === '' || $level === 'minimal') {
+                        $level = 'low';
+                    }
+                    if (! in_array($level, ['low', 'medium', 'high'], true)) {
+                        $level = 'low';
+                    }
                     $payload['generationConfig']['thinkingConfig'] = ['thinkingLevel' => $level];
                 }
 
                 // 401/402/403 / hard free-tier quota → throw (KeyPool rotates).
                 // Soft 429 (RPM) → backoff on the same key, then throw to rotate.
-                // Transient 5xx → short retry on the same key, then try fallback model.
+                // Transient 5xx / timeout → short retry, then next model.
                 $wait = 2;
                 $tries = $modelIndex === 0 ? 3 : 2;
                 for ($i = 1; $i <= $tries; $i++) {
-                    $response = Http::timeout($timeout)->acceptJson()->asJson()->post(
-                        'https://generativelanguage.googleapis.com/v1beta/models/'.rawurlencode($model).':generateContent?key='.$apiKey,
-                        $payload
-                    );
+                    try {
+                        $response = Http::timeout($timeout)
+                            ->connectTimeout($connectTimeout)
+                            ->acceptJson()
+                            ->asJson()
+                            ->post(
+                                'https://generativelanguage.googleapis.com/v1beta/models/'.rawurlencode($model).':generateContent?key='.$apiKey,
+                                $payload
+                            );
+                    } catch (ConnectionException $e) {
+                        $last = 'Gemini timeout/connect ['.$model.']: '.mb_substr($e->getMessage(), 0, 220);
+                        // Следующая модель сразу — не крутить 900с×N на мёртвом endpoint.
+                        if ($modelIndex < count($models) - 1) {
+                            break;
+                        }
+                        throw new RuntimeException($last, 0, $e);
+                    } catch (Throwable $e) {
+                        $msg = $e->getMessage();
+                        if (str_contains($msg, 'timed out') || str_contains($msg, 'cURL error 28')) {
+                            $last = 'Gemini timeout ['.$model.']: '.mb_substr($msg, 0, 220);
+                            if ($modelIndex < count($models) - 1) {
+                                break;
+                            }
+                            throw new RuntimeException($last, 0, $e);
+                        }
+                        throw $e;
+                    }
+
                     if ($response->successful()) {
                         return collect($response->json('candidates.0.content.parts', []))
                             ->pluck('text')

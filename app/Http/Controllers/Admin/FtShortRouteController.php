@@ -3,12 +3,15 @@
 namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\ReverseEngineerFtShortRouteJob;
 use App\Models\FtShortRoute;
 use App\Models\NewShortRoute;
 use App\Models\AppSetting;
 use App\Services\FtShortRouteNormalizer;
 use App\Services\FtShortRouteReverseEngineer;
 use App\Services\FtShortRouteRuTranslator;
+use App\Services\GeminiKeyPool;
+use App\Services\ReverseEngineeringPipelineStore;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -35,7 +38,16 @@ class FtShortRouteController extends Controller
     {
         $ui = $this->applyUiLocale();
         $q = trim((string) $request->get('q', ''));
-        $query = FtShortRoute::query()->orderByDesc('id');
+        // Сначала уже прогнанные RE (есть reverse_principle), потом остальные; внутри — новые id сверху.
+        $query = FtShortRoute::query()
+            ->orderByRaw(
+                "CASE
+                    WHEN reverse_principle IS NOT NULL
+                     AND reverse_principle != '[]'
+                     AND reverse_principle NOT LIKE '%\"skipped\"%'
+                    THEN 0 ELSE 1 END"
+            )
+            ->orderByDesc('id');
         if ($q !== '') {
             $query->where(function ($w) use ($q) {
                 $w->where('doc_code', 'like', '%'.$q.'%')
@@ -84,7 +96,7 @@ class FtShortRouteController extends Controller
             'pending' => $pending,
             'pendingRu' => $pendingRu,
             'reverseReady' => $reverseReady,
-            'reversePrompt' => FtShortRouteReverseEngineer::resolvePromptForUi($ui),
+            'reversePrompt' => FtShortRouteReverseEngineer::resolvePromptRu(),
         ]);
     }
 
@@ -95,17 +107,47 @@ class FtShortRouteController extends Controller
         if (! in_array($lang, ['he', 'ru'], true)) {
             $lang = 'he';
         }
+        $engine = strtolower((string) $request->get('engine', 'gemini'));
+        if (! in_array($engine, ['gemini', 'claude'], true)) {
+            $engine = 'gemini';
+        }
         $ft_short_route->loadMissing('newShortRoute');
-        // Старый RE на русском в поле HE → перенос в RU, HE нужно получить заново.
+        // Старый RE на русском в поле HE → перенос в RU, HE нужно получить заново (только Gemini-слот).
+        if ($engine === 'gemini' && $ft_short_route->repairMisplacedRussianReverse()) {
+            $ft_short_route->refresh();
+        }
+
+        $titleSuffix = $engine === 'claude' ? ' · Claude' : '';
+
+        return view('admin.ft_short_routes.show', [
+            'pageTitle' => __('ft_short.title').' #'.$ft_short_route->id.$titleSuffix,
+            'uiLang' => $ui,
+            'item' => $ft_short_route,
+            'lang' => $lang,
+            'engine' => $engine,
+        ]);
+    }
+
+    /** Отдельная страница: собирает PDF HE/RU и сразу скачивает файл. */
+    public function pdf(FtShortRoute $ft_short_route, string $lang): View
+    {
+        $this->applyUiLocale();
+        $lang = strtolower($lang);
+        if (! in_array($lang, ['he', 'ru'], true)) {
+            $lang = 'he';
+        }
+        $ft_short_route->loadMissing('newShortRoute');
         if ($ft_short_route->repairMisplacedRussianReverse()) {
             $ft_short_route->refresh();
         }
 
-        return view('admin.ft_short_routes.show', [
-            'pageTitle' => __('ft_short.title').' #'.$ft_short_route->id,
-            'uiLang' => $ui,
+        $code = preg_replace('/\W+/', '', (string) ($ft_short_route->doc_code ?: $ft_short_route->id)) ?: (string) $ft_short_route->id;
+        $fileName = 'ft-short-'.$ft_short_route->id.'-'.$code.'-'.strtoupper($lang).'.pdf';
+
+        return view('admin.ft_short_routes.pdf', [
             'item' => $ft_short_route,
             'lang' => $lang,
+            'fileName' => $fileName,
         ]);
     }
 
@@ -197,8 +239,11 @@ class FtShortRouteController extends Controller
     {
         @set_time_limit(600);
         $limit = max(1, min(40, (int) $request->input('limit', 20)));
+        $engine = strtolower((string) $request->input('engine', 'gemini'));
         try {
-            $result = $translator->translateBatch($ft_short_route, $limit);
+            $result = $engine === 'claude'
+                ? $translator->translateClaudeReverse($ft_short_route, $limit)
+                : $translator->translateBatch($ft_short_route, $limit);
         } catch (\Throwable $e) {
             return response()->json(['ok' => false, 'message' => $e->getMessage()], 500);
         }
@@ -210,6 +255,7 @@ class FtShortRouteController extends Controller
             'total' => $result['total'],
             'already' => $result['already'],
             'done' => $result['done'],
+            'engine' => $engine === 'claude' ? 'claude' : 'gemini',
         ];
         if (! empty($result['warning'])) {
             $payload['message'] = $result['warning'];
@@ -242,15 +288,19 @@ class FtShortRouteController extends Controller
         return response()->json(array_merge($result, ['ok' => $ok]), $ok ? 200 : 422);
     }
 
-    /** Сразу в Gemini → reverse_principle на карточке (только иврит). */
-    public function reverseOne(FtShortRoute $ft_short_route, FtShortRouteReverseEngineer $engineer): JsonResponse
+    /** Разбор: инструкция RU → reverse_principle на иврите. provider=gemini|claude */
+    public function reverseOne(Request $request, FtShortRoute $ft_short_route, FtShortRouteReverseEngineer $engineer): JsonResponse
     {
         @set_time_limit(600);
+        $provider = strtolower((string) $request->input('provider', 'gemini'));
+        if (! in_array($provider, ['gemini', 'claude'], true)) {
+            $provider = 'gemini';
+        }
         try {
             // Если в HE лежал русский — уводим в RU-слот, потом пишем новый HE.
             $ft_short_route->repairMisplacedRussianReverse();
             $ft_short_route->refresh();
-            $result = $engineer->extract($ft_short_route->fresh());
+            $result = $engineer->extract($ft_short_route->fresh(), $provider);
         } catch (\Throwable $e) {
             return response()->json(['ok' => false, 'message' => $e->getMessage()], 500);
         }
@@ -258,13 +308,99 @@ class FtShortRouteController extends Controller
         return response()->json(['ok' => true] + $result);
     }
 
+    public function reversePipelineStatus(Request $request): JsonResponse
+    {
+        $provider = strtolower((string) $request->query('provider', 'gemini'));
+        if (! in_array($provider, ['gemini', 'claude'], true)) {
+            $provider = 'gemini';
+        }
+        $pipeline = ReverseEngineeringPipelineStore::for(ReverseEngineerFtShortRouteJob::pipelineName($provider));
+
+        return response()->json($pipeline->status() + ['provider' => $provider]);
+    }
+
+    /**
+     * Пакетный разбор через queue:work (паузы между маршрутами).
+     * Body: { provider: gemini|claude, ids?: int[] }
+     */
+    public function reversePipelineStart(Request $request, GeminiKeyPool $keys): JsonResponse
+    {
+        $this->applyUiLocale();
+        $provider = strtolower((string) $request->input('provider', 'gemini'));
+        if (! in_array($provider, ['gemini', 'claude'], true)) {
+            $provider = 'gemini';
+        }
+
+        $pipeline = ReverseEngineeringPipelineStore::for(ReverseEngineerFtShortRouteJob::pipelineName($provider));
+        if ($pipeline->running()) {
+            return response()->json([
+                'ok' => false,
+                'message' => __('ft_short.pipeline_already_running', ['provider' => $provider]),
+            ], 409);
+        }
+
+        $ids = $request->input('ids', []);
+        if (! is_array($ids)) {
+            $ids = [];
+        }
+        $ids = array_values(array_unique(array_filter(array_map('intval', $ids), static fn ($id) => $id > 0)));
+
+        if ($ids === []) {
+            return response()->json(['ok' => false, 'message' => __('ft_short.alert_select_first')], 422);
+        }
+
+        $existing = FtShortRoute::query()->whereIn('id', $ids)->pluck('id')->all();
+        $ids = array_values(array_intersect($ids, array_map('intval', $existing)));
+        if ($ids === []) {
+            return response()->json(['ok' => false, 'message' => __('ft_short.alert_select_first')], 422);
+        }
+
+        if ($provider === 'gemini') {
+            $keys->resetToFirst();
+        }
+
+        $pipeline->begin($ids);
+        $first = $pipeline->shift();
+        if ($first !== null) {
+            ReverseEngineerFtShortRouteJob::dispatch($first, $provider);
+        }
+
+        $delay = max(8, (int) config('services.gemini.pipeline_delay_seconds', 8));
+        if ($provider === 'claude') {
+            $delay = max($delay, (int) config('services.claude.pipeline_delay_seconds', 12));
+        }
+
+        return response()->json([
+            'ok' => true,
+            'started' => count($ids),
+            'provider' => $provider,
+            'message' => __('ft_short.pipeline_started', [
+                'n' => count($ids),
+                'provider' => $provider,
+                'delay' => $delay,
+            ]),
+        ]);
+    }
+
+    public function reversePipelineCancel(Request $request): JsonResponse
+    {
+        $this->applyUiLocale();
+        $provider = strtolower((string) $request->input('provider', 'gemini'));
+        if (! in_array($provider, ['gemini', 'claude'], true)) {
+            $provider = 'gemini';
+        }
+        ReverseEngineeringPipelineStore::for(ReverseEngineerFtShortRouteJob::pipelineName($provider))->cancel();
+
+        return response()->json([
+            'ok' => true,
+            'provider' => $provider,
+            'message' => __('ft_short.pipeline_stopped'),
+        ]);
+    }
+
     public function saveReversePrompt(Request $request): JsonResponse
     {
-        $ui = $this->applyUiLocale();
-        $lang = strtolower((string) $request->input('lang', $ui));
-        if (! in_array($lang, ['he', 'ru'], true)) {
-            $lang = $ui;
-        }
+        $this->applyUiLocale();
         $request->validate([
             'prompt' => 'required|string|max:100000',
         ]);
@@ -272,24 +408,21 @@ class FtShortRouteController extends Controller
         if ($prompt === '') {
             return response()->json(['ok' => false, 'message' => __('ft_short.prompt_empty')], 422);
         }
-        FtShortRouteReverseEngineer::savePromptForUi($lang, $prompt);
+        // Единственный рабочий промпт — русский (уходит в Gemini; ответ модели на иврите).
+        FtShortRouteReverseEngineer::savePromptForUi('ru', $prompt);
 
-        return response()->json(['ok' => true, 'message' => __('ft_short.prompt_saved'), 'lang' => $lang]);
+        return response()->json(['ok' => true, 'message' => __('ft_short.prompt_saved'), 'lang' => 'ru']);
     }
 
     public function resetReversePrompt(Request $request): JsonResponse
     {
-        $ui = $this->applyUiLocale();
-        $lang = strtolower((string) $request->input('lang', $ui));
-        if (! in_array($lang, ['he', 'ru'], true)) {
-            $lang = $ui;
-        }
-        $fresh = FtShortRouteReverseEngineer::resetPromptForUi($lang);
+        $this->applyUiLocale();
+        $fresh = FtShortRouteReverseEngineer::resetPromptForUi('ru');
 
         return response()->json([
             'ok' => true,
             'prompt' => $fresh,
-            'lang' => $lang,
+            'lang' => 'ru',
             'message' => __('ft_short.prompt_reset_ok'),
         ]);
     }
